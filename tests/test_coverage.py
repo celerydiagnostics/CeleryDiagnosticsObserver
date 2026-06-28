@@ -31,6 +31,7 @@ def test_basic_redis_coverage_blocks_strong_topology_claims():
     assert report.worker_topology.status == "unknown"
     assert "queue backlog growth" in report.safe_claims
     assert any(item.claim == "no_worker_consuming_queue" for item in report.blocked_claims)
+    assert any(item.claim == "worker_wedged_after_broker_reconnect" for item in report.blocked_claims)
     assert any(item.claim == "routing_mismatch" for item in report.blocked_claims)
 
 
@@ -104,6 +105,7 @@ def test_startup_summary_redacts_secrets_and_explains_blocked_claims():
     assert "Diagnostic level: Basic Observer" in rendered
     assert "queue backlog growth" in rendered
     assert "no_worker_consuming_queue" in rendered
+    assert "worker_received_but_not_executing" in rendered
     assert "broker-secret" not in rendered
     assert "ingest-secret" not in rendered
     assert "cd_secret" not in rendered

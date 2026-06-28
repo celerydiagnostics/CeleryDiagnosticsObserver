@@ -217,6 +217,8 @@ def _blocked_claims(app_context: AppContextSnapshot) -> tuple[BlockedClaim, ...]
     )
     return (
         BlockedClaim("no_worker_consuming_queue", "requires worker topology or active queue evidence"),
+        BlockedClaim("worker_wedged_after_broker_reconnect", "requires broker reconnect, fresh worker liveness, queue backlog, and broker consumer evidence"),
+        BlockedClaim("worker_received_but_not_executing", "requires task_track_started plus fresh worker liveness after receive/reserve"),
         BlockedClaim("routing_mismatch", routing_reason),
         BlockedClaim("beat_schedule_missed", beat_reason),
         BlockedClaim("visibility_timeout_runtime_risk", visibility_reason),

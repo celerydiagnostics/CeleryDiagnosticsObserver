@@ -219,13 +219,23 @@ def _sanitize_task_event(
         kind="route",
         config=config,
     )
-    worker, worker_hashed = _label(
-        raw_event.get("hostname") or raw_event.get("worker") or "",
-        allowed=policy.send_worker_names,
-        kind="worker",
-        config=config,
-    )
+    if event_type == "task-sent":
+        worker, worker_hashed = "", False
+    else:
+        worker, worker_hashed = _label(
+            raw_event.get("hostname") or raw_event.get("worker") or "",
+            allowed=policy.send_worker_names,
+            kind="worker",
+            config=config,
+        )
     exception_type, exception_module = _exception_identity(raw_event, policy=policy)
+    expired_revoke = event_type == "task-revoked" and _truthy(raw_event.get("expired"))
+    metadata = {
+        "celery_clock": _optional_non_negative_int(raw_event.get("clock")),
+        "local_received": _datetime_iso(raw_event.get("local_received")),
+    }
+    if expired_revoke:
+        metadata["expired"] = True
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
@@ -245,7 +255,7 @@ def _sanitize_task_event(
             "routing_key_is_hashed": routing_key_hashed,
             "worker": worker,
             "worker_is_hashed": worker_hashed,
-            "state": state,
+            "state": "expired" if expired_revoke else state,
             "event_timestamp": _datetime_iso(raw_event.get("timestamp")) or observed_at,
             "observed_at": observed_at,
             "root_id": _safe_token(raw_event.get("root_id"), 255),
@@ -256,10 +266,7 @@ def _sanitize_task_event(
             "exception_type": exception_type,
             "exception_module": exception_module,
             "payload_redacted": True,
-            "metadata": {
-                "celery_clock": _optional_non_negative_int(raw_event.get("clock")),
-                "local_received": _datetime_iso(raw_event.get("local_received")),
-            },
+            "metadata": metadata,
         }
     )
 
@@ -376,6 +383,14 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _safe_token(value: Any, limit: int) -> str:

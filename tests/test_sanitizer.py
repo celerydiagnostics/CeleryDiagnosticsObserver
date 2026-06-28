@@ -82,6 +82,62 @@ def test_balanced_policy_sends_task_and_queue_but_hashes_worker():
     assert payload["worker_is_hashed"] is True
 
 
+def test_task_sent_does_not_treat_producer_hostname_as_worker():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("emails",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-sent",
+            "uuid": "task-published",
+            "name": "billing.tasks.send_email",
+            "routing_key": "emails",
+            "hostname": "web@producer-1",
+        },
+        config=config,
+        policy=policy_from_name("balanced"),
+    )
+
+    assert payload is not None
+    assert payload["normalized_event_type"] == "task_published"
+    assert payload["queue"] == "emails"
+    assert payload["worker"] == ""
+    assert payload["worker_is_hashed"] is False
+
+
+def test_expired_revoke_preserves_expired_hint():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-revoked",
+            "uuid": "task-expired",
+            "name": "billing.tasks.expire_me",
+            "routing_key": "default",
+            "hostname": "celery@worker-1",
+            "expired": True,
+        },
+        config=config,
+        policy=policy_from_name("balanced"),
+    )
+
+    assert payload is not None
+    assert payload["normalized_event_type"] == "task_revoked"
+    assert payload["state"] == "expired"
+    assert payload["metadata"]["expired"] is True
+
+
 def test_queue_snapshot_represents_redis_consumers_as_unknown():
     config = ObserverConfig(
         broker_url="redis://redis:6379/0",
