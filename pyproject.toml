@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "celery-diagnostics"
+version = "0.2.0"
+description = "Standalone Celery Diagnostics observer."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+authors = [
+  { name = "Celery Diagnostics" },
+]
+keywords = ["celery", "diagnostics", "observer", "task-queue", "redis"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: Celery",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Monitoring",
+  "Typing :: Typed",
+]
+dependencies = [
+  "celery>=5.3",
+  "redis>=5.0",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pytest>=8.0,<9.0",
+  "ruff>=0.6,<1.0",
+]
+
+[project.urls]
+Homepage = "https://celerydiagnostics.dev"
+Documentation = "https://celerydiagnostics.dev/docs"
+Issues = "https://github.com/celery-diagnostics/celery-diagnostics/issues"
+Source = "https://github.com/celery-diagnostics/celery-diagnostics"
+
+[project.scripts]
+celery-diagnostics = "celery_diagnostics_observer.cli:main"
+
+[tool.setuptools]
+packages = ["celery_diagnostics_observer"]
+
+[tool.setuptools.package-data]
+celery_diagnostics_observer = ["py.typed"]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
