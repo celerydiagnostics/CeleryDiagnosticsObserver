@@ -126,6 +126,77 @@ def test_doctor_reports_coverage_and_redacts_secrets(monkeypatch, capsys):
     assert "cd_secret" not in output
 
 
+def test_doctor_with_app_reports_enhanced_observer_without_project_key(monkeypatch, tmp_path, capsys):
+    module_path = tmp_path / "demo_celery_app.py"
+    module_path.write_text(
+        "\n".join(
+            [
+                "from celery import Celery",
+                "app = Celery('demo', broker='redis://localhost:6379/0')",
+                "app.conf.update(",
+                "    broker_transport_options={'visibility_timeout': 120},",
+                "    task_track_started=True,",
+                "    task_default_queue='default',",
+                "    task_routes={'billing.tasks.charge': {'queue': 'billing'}},",
+                "    beat_schedule={'billing-nightly': {'task': 'billing.tasks.nightly', 'schedule': 3600}},",
+                ")",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delenv("CD_PROJECT_KEY", raising=False)
+
+    exit_code = main(
+        [
+            "doctor",
+            "--mode",
+            "project-aware",
+            "-A",
+            "demo_celery_app:app",
+            "--broker",
+            "redis://:broker-secret@localhost:6379/0",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Diagnostic level: Enhanced Observer" in output
+    assert "App context: loaded" in output
+    assert "Routing config: known" in output
+    assert "Visibility timeout: known" in output
+    assert "120s" in output
+    assert "task_track_started: enabled" in output
+    assert "Beat schedule: known" in output
+    assert "broker-secret" not in output
+
+
+def test_doctor_with_bad_app_reports_failed_context(monkeypatch, capsys):
+    monkeypatch.delenv("CD_PROJECT_KEY", raising=False)
+
+    exit_code = main(["doctor", "--mode", "project-aware", "-A", "missing_demo_app:app"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "App context: failed" in output
+    assert "Diagnostic level: Basic Observer" in output
+
+
+def test_doctor_with_bad_app_does_not_echo_exception_message_secrets(monkeypatch, tmp_path, capsys):
+    module_path = tmp_path / "bad_celery_app.py"
+    module_path.write_text("raise RuntimeError('token-secret-value')\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delenv("CD_PROJECT_KEY", raising=False)
+
+    exit_code = main(["doctor", "--mode", "project-aware", "-A", "bad_celery_app:app"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "App context: failed" in output
+    assert "RuntimeError" in output
+    assert "token-secret-value" not in output
+
+
 def test_status_is_lightweight(monkeypatch, capsys):
     monkeypatch.setenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 

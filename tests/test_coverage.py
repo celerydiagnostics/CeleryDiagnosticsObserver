@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery_diagnostics_observer.config import ObserverConfig
+from celery_diagnostics_observer.app_context import AppContextSnapshot
 from celery_diagnostics_observer.coverage import (
     build_coverage_report,
     render_doctor_report,
@@ -31,6 +32,44 @@ def test_basic_redis_coverage_blocks_strong_topology_claims():
     assert "queue backlog growth" in report.safe_claims
     assert any(item.claim == "no_worker_consuming_queue" for item in report.blocked_claims)
     assert any(item.claim == "routing_mismatch" for item in report.blocked_claims)
+
+
+def test_enhanced_observer_coverage_uses_app_context_facts():
+    config = ObserverConfig(
+        broker_url="redis://localhost:6379/0",
+        queues=("default",),
+        project_key="cd_secret",
+        ingest_url="https://ingest.example.test",
+        telemetry_policy="balanced",
+        mode="project-aware",
+        app="demo.celery:app",
+    )
+    app_context = AppContextSnapshot(
+        loaded=True,
+        routing_config_known=True,
+        route_count=2,
+        queue_count=1,
+        default_queue_configured=True,
+        beat_schedule_known=True,
+        beat_schedule_entry_count=1,
+        visibility_timeout=120,
+        task_track_started=True,
+    )
+
+    report = build_coverage_report(config, _policy(), app_context=app_context)
+
+    assert report.diagnostic_level == "Enhanced Observer"
+    assert report.app_context.status == "loaded"
+    assert report.routing_config.status == "known"
+    assert "2 explicit route" in report.routing_config.detail
+    assert report.visibility_timeout.status == "known"
+    assert "120s" in report.visibility_timeout.detail
+    assert report.task_track_started.status == "enabled"
+    assert report.beat_schedule.status == "known"
+    assert any(
+        item.claim == "visibility_timeout_runtime_risk" and "runtime evidence" in item.reason
+        for item in report.blocked_claims
+    )
 
 
 def test_missing_broker_keeps_redis_sampling_unavailable():

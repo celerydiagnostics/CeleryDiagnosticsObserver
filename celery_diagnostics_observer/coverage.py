@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .app_context import AppContextSnapshot, unloaded_app_context
 from .config import MODE_PROJECT_AWARE, ObserverConfig
 from .policy import TelemetryPolicy
 from .sanitizer import redact_url_credentials
@@ -55,9 +56,15 @@ def build_coverage_report(
     config: ObserverConfig,
     policy: TelemetryPolicy,
     *,
+    app_context: AppContextSnapshot | None = None,
     app_context_loaded: bool = False,
     app_context_error: str = "",
 ) -> CoverageReport:
+    app_context = _normalize_app_context(
+        app_context,
+        app_context_loaded=app_context_loaded,
+        app_context_error=app_context_error,
+    )
     broker_type = config.broker_type
     redis_status = "available" if broker_type in {"redis", "rediss"} else "unavailable"
     redis_detail = (
@@ -66,15 +73,15 @@ def build_coverage_report(
         else "Set CELERY_BROKER_URL to a Redis broker URL."
     )
 
-    app_status = "loaded" if app_context_loaded else "not_loaded"
+    app_status = "loaded" if app_context.loaded else "not_loaded"
     app_detail = (
         "App context was loaded in the observer process."
-        if app_context_loaded
-        else "No Celery app context is loaded in this slice."
+        if app_context.loaded
+        else "No Celery app context is loaded."
     )
-    if app_context_error:
+    if app_context.error:
         app_status = "failed"
-        app_detail = f"App context load failed: {_safe_error_label(app_context_error)}"
+        app_detail = f"App context load failed: {_safe_error_label(app_context.error)}"
 
     worker_topology = CoverageSource(
         "Worker topology",
@@ -87,8 +94,8 @@ def build_coverage_report(
     )
 
     safe_claims = _safe_claims(redis_status)
-    next_steps = _next_steps(config, policy)
-    diagnostic_level = "Enhanced Observer" if app_context_loaded else "Basic Observer"
+    next_steps = _next_steps(config, policy, app_context)
+    diagnostic_level = "Enhanced Observer" if app_context.loaded else "Basic Observer"
 
     return CoverageReport(
         redis_broker_sampling=CoverageSource("Redis broker sampling", redis_status, redis_detail),
@@ -99,26 +106,18 @@ def build_coverage_report(
         ),
         app_context=CoverageSource("App context", app_status, app_detail),
         worker_topology=worker_topology,
-        routing_config=CoverageSource("Routing config", "unknown", "Routing config is not loaded in this slice."),
-        beat_schedule=CoverageSource("Beat schedule", "unknown", "Beat schedule evidence is not loaded in this slice."),
-        visibility_timeout=CoverageSource(
-            "Visibility timeout",
-            "unknown",
-            "Broker visibility timeout is not known in this slice.",
-        ),
-        task_track_started=CoverageSource(
-            "task_track_started",
-            "unknown",
-            "Task start tracking config is not known in this slice.",
-        ),
+        routing_config=_routing_config_source(app_context),
+        beat_schedule=_beat_schedule_source(app_context),
+        visibility_timeout=_visibility_timeout_source(app_context),
+        task_track_started=_task_track_started_source(app_context),
         producer_publish_tracking=CoverageSource(
             "Producer publish tracking",
             "unavailable",
-            "Publisher Probe is not enabled in this slice.",
+            "Publisher Probe is optional producer-side instrumentation and is not confirmed by this observer.",
         ),
         diagnostic_level=diagnostic_level,
         safe_claims=safe_claims,
-        blocked_claims=_blocked_claims(),
+        blocked_claims=_blocked_claims(app_context),
         next_steps=next_steps,
     )
 
@@ -200,26 +199,49 @@ def _safe_claims(redis_status: str) -> tuple[str, ...]:
     return tuple(claims)
 
 
-def _blocked_claims() -> tuple[BlockedClaim, ...]:
+def _blocked_claims(app_context: AppContextSnapshot) -> tuple[BlockedClaim, ...]:
+    routing_reason = (
+        "requires worker active queue evidence"
+        if app_context.loaded and app_context.routing_config_known
+        else "requires routing config plus worker active queues"
+    )
+    beat_reason = (
+        "requires beat runtime scheduling evidence"
+        if app_context.loaded and app_context.beat_schedule_known
+        else "requires beat schedule evidence"
+    )
+    visibility_reason = (
+        "requires runtime evidence and ack/redelivery semantics"
+        if app_context.loaded and app_context.visibility_timeout is not None
+        else "requires known visibility timeout and runtime evidence"
+    )
     return (
         BlockedClaim("no_worker_consuming_queue", "requires worker topology or active queue evidence"),
-        BlockedClaim("routing_mismatch", "requires routing config plus worker active queues"),
-        BlockedClaim("beat_schedule_missed", "requires beat schedule evidence"),
-        BlockedClaim("visibility_timeout_runtime_risk", "requires known visibility timeout and runtime evidence"),
+        BlockedClaim("routing_mismatch", routing_reason),
+        BlockedClaim("beat_schedule_missed", beat_reason),
+        BlockedClaim("visibility_timeout_runtime_risk", visibility_reason),
         BlockedClaim("publish_failed_before_broker", "requires producer-side Publisher Probe telemetry"),
     )
 
 
-def _next_steps(config: ObserverConfig, policy: TelemetryPolicy) -> tuple[str, ...]:
+def _next_steps(config: ObserverConfig, policy: TelemetryPolicy, app_context: AppContextSnapshot) -> tuple[str, ...]:
     steps: list[str] = []
     if not config.broker_url:
         steps.append("configure CELERY_BROKER_URL")
-    if config.mode != MODE_PROJECT_AWARE or not config.app:
-        steps.append("run with `-A myproject.celery:app` in a future enhanced observer slice for app-aware context")
+    if app_context.error:
+        steps.append("fix the Celery app import path passed with `-A`")
+    elif config.mode != MODE_PROJECT_AWARE or not config.app:
+        steps.append("run with `-A myproject.celery:app` for app-aware context")
+    elif not app_context.loaded:
+        steps.append("make sure the Celery app can be imported by the observer process")
+    if app_context.loaded and app_context.visibility_timeout is None:
+        steps.append("set broker_transport_options.visibility_timeout when Redis/SQS redelivery risk matters")
+    if app_context.loaded and app_context.task_track_started is not True:
+        steps.append("enable task_track_started for stronger received-to-started diagnostics")
     if not policy.enable_control_inspect:
         steps.append("use a telemetry policy with control inspect when worker topology is safe to collect")
     steps.append("enable Celery task events so the observer can see lifecycle transitions")
-    steps.append("enable Publisher Probe in producer processes in a future slice to diagnose pre-broker publish failures")
+    steps.append("enable Publisher Probe in producer processes to diagnose pre-broker publish failures")
     return tuple(steps)
 
 
@@ -240,6 +262,74 @@ def _source_lines(report: CoverageReport) -> list[str]:
 def _source_line(source: CoverageSource) -> str:
     detail = f" - {source.detail}" if source.detail else ""
     return f"- {source.label}: {source.status}{detail}"
+
+
+def _normalize_app_context(
+    app_context: AppContextSnapshot | None,
+    *,
+    app_context_loaded: bool,
+    app_context_error: str,
+) -> AppContextSnapshot:
+    if app_context is not None:
+        return app_context
+    if app_context_error:
+        return AppContextSnapshot(loaded=False, error=app_context_error)
+    if app_context_loaded:
+        return AppContextSnapshot(loaded=True)
+    return unloaded_app_context()
+
+
+def _routing_config_source(app_context: AppContextSnapshot) -> CoverageSource:
+    if not app_context.loaded:
+        return CoverageSource("Routing config", "unknown", "Routing config requires app-aware observer context.")
+    if not app_context.routing_config_known:
+        return CoverageSource("Routing config", "unknown", "No safe routing config facts were found on the Celery app.")
+    parts = []
+    if app_context.route_count is not None:
+        parts.append(_count_label(app_context.route_count, "explicit route"))
+    if app_context.queue_count is not None:
+        parts.append(_count_label(app_context.queue_count, "configured queue"))
+    if app_context.default_queue_configured:
+        parts.append("default queue configured")
+    return CoverageSource("Routing config", "known", "; ".join(parts) or "Routing config facts are available.")
+
+
+def _beat_schedule_source(app_context: AppContextSnapshot) -> CoverageSource:
+    if not app_context.loaded:
+        return CoverageSource("Beat schedule", "unknown", "Beat schedule requires app-aware observer context.")
+    if not app_context.beat_schedule_known:
+        return CoverageSource("Beat schedule", "unknown", "No safe beat_schedule config was found on the Celery app.")
+    count = app_context.beat_schedule_entry_count
+    status = "empty" if count == 0 else "known"
+    detail = _count_label(count or 0, "configured schedule entry")
+    return CoverageSource("Beat schedule", status, detail)
+
+
+def _visibility_timeout_source(app_context: AppContextSnapshot) -> CoverageSource:
+    if not app_context.loaded:
+        return CoverageSource("Visibility timeout", "unknown", "Visibility timeout requires app-aware observer context.")
+    if app_context.visibility_timeout is None:
+        return CoverageSource(
+            "Visibility timeout",
+            "unknown",
+            "broker_transport_options.visibility_timeout is not configured or not safely readable.",
+        )
+    return CoverageSource("Visibility timeout", "known", f"{app_context.visibility_timeout}s")
+
+
+def _task_track_started_source(app_context: AppContextSnapshot) -> CoverageSource:
+    if not app_context.loaded:
+        return CoverageSource("task_track_started", "unknown", "Task start tracking requires app-aware observer context.")
+    if app_context.task_track_started is True:
+        return CoverageSource("task_track_started", "enabled", "Received-to-started gaps can be interpreted more safely.")
+    if app_context.task_track_started is False:
+        return CoverageSource("task_track_started", "disabled", "Missing task-started events may be expected.")
+    return CoverageSource("task_track_started", "unknown", "task_track_started is not safely readable.")
+
+
+def _count_label(count: int, noun: str) -> str:
+    suffix = "" if count == 1 else "s"
+    return f"{count} {noun}{suffix}"
 
 
 def _bullet_lines(items: tuple[str, ...]) -> list[str]:

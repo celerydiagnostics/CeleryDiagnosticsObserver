@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 
+from .app_context import AppContextSnapshot, failed_app_context, inspect_celery_app, unloaded_app_context
 from .app_loader import load_celery_app
 from .config import MODE_PROJECT_AWARE, MODE_STANDALONE, config_from_env
 from .coverage import build_coverage_report, render_doctor_report, render_startup_summary, render_status_report
@@ -47,12 +48,15 @@ def observe(args: argparse.Namespace) -> int:
     if not config.broker_url and config.mode == MODE_STANDALONE:
         print("Redis broker URL is required in standalone mode", file=sys.stderr)
         return 2
-    app = load_celery_app(config)
-    report = build_coverage_report(
-        config,
-        policy,
-        app_context_loaded=bool(config.mode == MODE_PROJECT_AWARE and config.app),
-    )
+    try:
+        app = load_celery_app(config)
+    except Exception as exc:  # noqa: BLE001
+        app_context = failed_app_context(exc)
+        report = build_coverage_report(config, policy, app_context=app_context)
+        print(render_startup_summary(config, report), file=sys.stderr)
+        return 2
+    app_context = inspect_celery_app(app) if config.mode == MODE_PROJECT_AWARE and config.app else unloaded_app_context()
+    report = build_coverage_report(config, policy, app_context=app_context)
     print(render_startup_summary(config, report), file=sys.stderr)
     sampler_loop = RedisSamplerLoop(RedisQueueSampler(config, policy), transport)
     inspect_loop = CeleryInspectSamplerLoop(CeleryInspectSampler(app, config, policy), transport)
@@ -74,7 +78,7 @@ def observe(args: argparse.Namespace) -> int:
 def doctor(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     policy = policy_from_name(config.telemetry_policy)
-    report = build_coverage_report(config, policy)
+    report = build_coverage_report(config, policy, app_context=_app_context_for_report(config))
     print(render_doctor_report(config, report))
     return 0
 
@@ -82,9 +86,18 @@ def doctor(args: argparse.Namespace) -> int:
 def status(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     policy = policy_from_name(config.telemetry_policy)
-    report = build_coverage_report(config, policy)
+    report = build_coverage_report(config, policy, app_context=_app_context_for_report(config))
     print(render_status_report(config, report))
     return 0
+
+
+def _app_context_for_report(config) -> AppContextSnapshot:
+    if config.mode != MODE_PROJECT_AWARE or not config.app:
+        return unloaded_app_context()
+    try:
+        return inspect_celery_app(load_celery_app(config))
+    except Exception as exc:  # noqa: BLE001
+        return failed_app_context(exc)
 
 
 def _config_from_args(args: argparse.Namespace):
