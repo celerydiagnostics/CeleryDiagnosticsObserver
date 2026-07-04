@@ -110,6 +110,36 @@ def test_task_sent_does_not_treat_producer_hostname_as_worker():
     assert payload["worker_is_hashed"] is False
 
 
+def test_task_failed_unwraps_time_limit_from_exception_with_traceback_result():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-failed",
+            "uuid": "task-hard-time-limit",
+            "name": "diagnostics.hard_timeout",
+            "routing_key": "default",
+            "hostname": "celery@worker-1",
+            "exc_type": "billiard.einfo.ExceptionWithTraceback",
+            "result": "billiard.exceptions.TimeLimitExceeded(1,)",
+        },
+        config=config,
+        policy=policy_from_name("balanced"),
+    )
+
+    assert payload is not None
+    assert payload["exception_type"] == "TimeLimitExceeded"
+    assert payload["exception_module"] == "billiard.exceptions"
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "TimeLimitExceeded(1,)" not in rendered
+
+
 def test_expired_revoke_preserves_expired_hint():
     config = ObserverConfig(
         broker_url="redis://redis:6379/0",

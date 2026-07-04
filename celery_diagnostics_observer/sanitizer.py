@@ -43,6 +43,11 @@ WORKER_EVENT_MAP = {
 }
 
 _EXCEPTION_TYPE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)(?:\(|:|$)")
+_KNOWN_INNER_EXCEPTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])((?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+    r"(?:SoftTimeLimitExceeded|TimeLimitExceeded|WorkerLostError))(?:\(|:|$)"
+)
+_WRAPPER_EXCEPTION_TYPES = {"ExceptionWithTraceback"}
 
 
 def sanitize_celery_event(raw_event: dict[str, Any], *, config: ObserverConfig, policy: TelemetryPolicy) -> dict[str, Any] | None:
@@ -324,13 +329,43 @@ def _label(value: Any, *, allowed: bool, kind: str, config: ObserverConfig) -> t
 def _exception_identity(raw_event: dict[str, Any], *, policy: TelemetryPolicy) -> tuple[str | None, str | None]:
     if not policy.collect_exception_type:
         return None, None
-    raw = str(raw_event.get("exception") or raw_event.get("exc_type") or "").strip()
+    wrapper: tuple[str | None, str | None] = (None, None)
+    for key in ("exception", "exc_type"):
+        parsed = _parse_exception_identity(raw_event.get(key), policy=policy)
+        if not parsed[0]:
+            continue
+        if parsed[0] in _WRAPPER_EXCEPTION_TYPES:
+            wrapper = parsed
+            continue
+        return parsed
+    inner = _known_inner_exception_identity(raw_event, policy=policy)
+    if inner[0]:
+        return inner
+    return wrapper
+
+
+def _parse_exception_identity(value: Any, *, policy: TelemetryPolicy) -> tuple[str | None, str | None]:
+    raw = str(value or "").strip()
     if not raw:
         return None, None
     match = _EXCEPTION_TYPE_RE.match(raw)
     if not match:
         return None, None
-    dotted = match.group(1)
+    return _split_exception_identity(match.group(1), policy=policy)
+
+
+def _known_inner_exception_identity(raw_event: dict[str, Any], *, policy: TelemetryPolicy) -> tuple[str | None, str | None]:
+    for key in ("exception", "result", "traceback"):
+        raw = str(raw_event.get(key) or "")
+        if not raw:
+            continue
+        match = _KNOWN_INNER_EXCEPTION_RE.search(raw)
+        if match:
+            return _split_exception_identity(match.group(1), policy=policy)
+    return None, None
+
+
+def _split_exception_identity(dotted: str, *, policy: TelemetryPolicy) -> tuple[str | None, str | None]:
     if "." in dotted and policy.collect_exception_module:
         module, _, type_name = dotted.rpartition(".")
         return _safe_token(type_name, 255), _safe_token(module, 255)
