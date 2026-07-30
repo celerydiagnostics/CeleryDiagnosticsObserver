@@ -32,6 +32,8 @@ class ObserverConfig:
     log_level: str = "INFO"
     dry_run: bool = False
     print_sanitized_events: bool = False
+    active_probes: bool = True
+    broker_message_scan_limit: int = 10_000
 
     def __post_init__(self) -> None:
         set_value = object.__setattr__
@@ -52,10 +54,29 @@ class ObserverConfig:
         set_value(self, "log_level", str(self.log_level or "INFO").upper())
         set_value(self, "dry_run", bool(self.dry_run))
         set_value(self, "print_sanitized_events", bool(self.print_sanitized_events))
+        set_value(self, "active_probes", bool(self.active_probes))
+        set_value(
+            self,
+            "broker_message_scan_limit",
+            _bounded_int(
+                self.broker_message_scan_limit,
+                default=10_000,
+                minimum=1,
+                maximum=100_000,
+            ),
+        )
 
     @property
     def observer_events_url(self) -> str:
         return self.ingest_url.rstrip("/") + "/api/ingest/observer/events/"
+
+    @property
+    def probe_next_url(self) -> str:
+        return self.ingest_url.rstrip("/") + "/api/ingest/observer/probes/next/"
+
+    @property
+    def probe_result_url(self) -> str:
+        return self.ingest_url.rstrip("/") + "/api/ingest/observer/probes/result/"
 
     @property
     def broker_type(self) -> str:
@@ -67,6 +88,9 @@ def config_from_env(overrides: dict[str, Any] | None = None) -> ObserverConfig:
     queues = overrides.get("queues")
     if queues is None:
         queues = os.getenv("CD_QUEUES", "")
+    active_probes = overrides.get("active_probes")
+    if active_probes is None:
+        active_probes = os.getenv("CD_ACTIVE_PROBES", "1")
     return ObserverConfig(
         broker_url=overrides.get("broker_url") or os.getenv("CELERY_BROKER_URL", ""),
         queues=_parse_queues(queues),
@@ -84,6 +108,11 @@ def config_from_env(overrides: dict[str, Any] | None = None) -> ObserverConfig:
         log_level=overrides.get("log_level") or os.getenv("CD_LOG_LEVEL", "INFO"),
         dry_run=overrides.get("dry_run", False),
         print_sanitized_events=overrides.get("print_sanitized_events", False),
+        active_probes=_boolean(active_probes, default=True),
+        broker_message_scan_limit=overrides.get(
+            "broker_message_scan_limit"
+        )
+        or os.getenv("CD_BROKER_MESSAGE_SCAN_LIMIT", 10_000),
     )
 
 
@@ -120,3 +149,14 @@ def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float
 
 def _default_observer_id() -> str:
     return f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+
+
+def _boolean(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default

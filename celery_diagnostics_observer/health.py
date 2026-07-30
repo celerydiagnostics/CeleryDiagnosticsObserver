@@ -12,10 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class ObserverHealthLoop:
-    def __init__(self, config: ObserverConfig, policy: TelemetryPolicy, transport, *, interval: float = 30.0):
+    def __init__(
+        self,
+        config: ObserverConfig,
+        policy: TelemetryPolicy,
+        transport,
+        *,
+        capabilities: tuple[str, ...] = (),
+        interval: float = 30.0,
+    ):
         self.config = config
         self.policy = policy
         self.transport = transport
+        self.capabilities = tuple(capabilities)
         self.interval = max(5.0, float(interval))
         self.stop_event = Event()
         self.thread: Thread | None = None
@@ -36,7 +45,12 @@ class ObserverHealthLoop:
         while not self.stop_event.is_set():
             try:
                 self.transport.enqueue(
-                    sanitize_observer_heartbeat(config=self.config, policy=self.policy, transport=self.transport)
+                    sanitize_observer_heartbeat(
+                        config=self.config,
+                        policy=self.policy,
+                        transport=self.transport,
+                        capabilities=self.capabilities,
+                    )
                 )
                 self.transport.flush_once()
             except Exception as exc:  # noqa: BLE001

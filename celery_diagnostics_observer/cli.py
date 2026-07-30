@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from datetime import datetime
+from dataclasses import asdict
 
 from .app_context import AppContextSnapshot, failed_app_context, inspect_celery_app, unloaded_app_context
+from .active_probes import ActiveProbeExecutor, ActiveProbeLoop
+from .capabilities import active_probe_capabilities
 from .app_loader import load_celery_app
 from .config import MODE_PROJECT_AWARE, MODE_STANDALONE, config_from_env
 from .coverage import build_coverage_report, render_doctor_report, render_startup_summary, render_status_report
@@ -13,6 +18,7 @@ from .health import ObserverHealthLoop
 from .inspect_sampler import CeleryInspectSampler, CeleryInspectSamplerLoop
 from .policy import POLICY_CHOICES, policy_from_name
 from .redis_sampler import RedisQueueSampler, RedisSamplerLoop
+from .replay import export_event_replay
 from .sanitizer import sanitize_observer_heartbeat
 from .transport import ObserverTransport
 
@@ -26,6 +32,8 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(args)
     if args.command == "status":
         return status(args)
+    if args.command == "replay-events":
+        return replay_events(args)
     parser.print_help()
     return 2
 
@@ -60,14 +68,25 @@ def observe(args: argparse.Namespace) -> int:
     print(render_startup_summary(config, report), file=sys.stderr)
     sampler_loop = RedisSamplerLoop(RedisQueueSampler(config, policy), transport)
     inspect_loop = CeleryInspectSamplerLoop(CeleryInspectSampler(app, config, policy), transport)
-    health_loop = ObserverHealthLoop(config, policy, transport)
+    health_loop = ObserverHealthLoop(
+        config,
+        policy,
+        transport,
+        capabilities=active_probe_capabilities(app, config, policy),
+    )
+    active_probe_loop = ActiveProbeLoop(
+        ActiveProbeExecutor(app, config, policy),
+        config,
+    )
     health_loop.start()
     sampler_loop.start()
     inspect_loop.start()
+    active_probe_loop.start()
     receiver = EventReceiver(app, config, policy, transport)
     try:
         receiver.run_forever()
     finally:
+        active_probe_loop.stop()
         health_loop.stop()
         inspect_loop.stop()
         sampler_loop.stop()
@@ -88,6 +107,25 @@ def status(args: argparse.Namespace) -> int:
     policy = policy_from_name(config.telemetry_policy)
     report = build_coverage_report(config, policy, app_context=_app_context_for_report(config))
     print(render_status_report(config, report))
+    return 0
+
+
+def replay_events(args: argparse.Namespace) -> int:
+    config = _config_from_args(args)
+    if not config.project_key:
+        print("CD_PROJECT_KEY environment variable is required", file=sys.stderr)
+        return 2
+    policy = policy_from_name(config.telemetry_policy)
+    anchor = datetime.fromisoformat(args.anchor) if args.anchor else None
+    result = export_event_replay(
+        args.input,
+        args.output,
+        config=config,
+        policy=policy,
+        cutoff=args.cutoff,
+        anchor=anchor,
+    )
+    print(json.dumps(asdict(result), sort_keys=True))
     return 0
 
 
@@ -118,6 +156,7 @@ def _config_from_args(args: argparse.Namespace):
             "log_level": getattr(args, "log_level", None),
             "dry_run": getattr(args, "dry_run", False),
             "print_sanitized_events": getattr(args, "print_sanitized_events", False),
+            "active_probes": getattr(args, "active_probes", None),
         }
     )
 
@@ -136,12 +175,32 @@ def _build_parser() -> argparse.ArgumentParser:
     observe_parser.add_argument("--log-level", default=None)
     observe_parser.add_argument("--dry-run", action="store_true")
     observe_parser.add_argument("--print-sanitized-events", action="store_true")
+    observe_parser.add_argument(
+        "--no-active-probes",
+        action="store_false",
+        dest="active_probes",
+        default=None,
+        help="Disable on-demand read-only diagnostic checks.",
+    )
 
     doctor_parser = subparsers.add_parser("doctor", help="Explain current telemetry coverage and diagnostic limits.")
     _add_common_config_args(doctor_parser)
 
     status_parser = subparsers.add_parser("status", help="Show lightweight observer integration status.")
     _add_common_config_args(status_parser)
+    replay_parser = subparsers.add_parser(
+        "replay-events",
+        help="Sanitize and time-shift a retained public Celery JSONL capture.",
+    )
+    replay_parser.add_argument("--input", required=True)
+    replay_parser.add_argument("--output", required=True)
+    replay_parser.add_argument("--cutoff", required=True, type=float)
+    replay_parser.add_argument(
+        "--anchor",
+        default=None,
+        help="ISO-8601 time mapped to the public cutoff; defaults to now.",
+    )
+    replay_parser.add_argument("--policy", choices=sorted(POLICY_CHOICES), default=None)
     return parser
 
 

@@ -168,6 +168,75 @@ def test_expired_revoke_preserves_expired_hint():
     assert payload["metadata"]["expired"] is True
 
 
+def test_requeued_rejection_preserves_delivery_semantics_without_payload():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-rejected",
+            "uuid": "task-redelivered",
+            "name": "billing.tasks.charge_customer",
+            "routing_key": "default",
+            "hostname": "celery@worker-1",
+            "requeue": True,
+            "argsrepr": "('customer-secret',)",
+            "kwargsrepr": "{'token': 'secret'}",
+            "result": {"card": "4242"},
+        },
+        config=config,
+        policy=policy_from_name("balanced"),
+    )
+
+    assert payload is not None
+    assert payload["normalized_event_type"] == "task_rejected"
+    assert payload["state"] == "rejected"
+    assert payload["delivery_redelivered"] is True
+    assert payload["metadata"]["requeue"] is True
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "customer-secret" not in rendered
+    assert "token" not in rendered
+    assert "4242" not in rendered
+
+
+def test_task_progress_keeps_only_sequence_and_declared_silence_obligation():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-progress",
+            "uuid": "task-progress-1",
+            "hostname": "worker-private",
+            "progress_sequence": 8,
+            "progress_max_silence_seconds": 30,
+            "progress_value": {"customer": "private"},
+            "args": ["private"],
+        },
+        config=config,
+        policy=policy_from_name("balanced"),
+    )
+
+    assert payload is not None
+    assert payload["normalized_event_type"] == "task_progress"
+    assert payload["metadata"]["progress_sequence"] == 8
+    assert payload["metadata"]["progress_max_silence_seconds"] == 30
+    rendered = json.dumps(payload)
+    assert "progress_value" not in rendered
+    assert "customer" not in rendered
+    assert '"private"' not in rendered
+
+
 def test_queue_snapshot_represents_redis_consumers_as_unknown():
     config = ObserverConfig(
         broker_url="redis://redis:6379/0",

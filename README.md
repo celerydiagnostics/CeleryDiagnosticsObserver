@@ -13,6 +13,10 @@ does not install code into customer web or worker processes.
 - A passive observer for Redis broker queue depth, Celery task/worker events,
   optional Celery control inspect snapshots, observer health, transport retry,
   and local sanitized spool.
+- An executor for bounded, read-only diagnostic checks requested by Celery
+  Diagnostics. Checks cover task presence, reservation, scheduling, worker
+  capacity and presence, queue consumers, status-only JSON result records in
+  Redis, and task-specific presence in configured Redis queues.
 - An optional app-aware observer when run with `-A myproject.celery:app`; this
   loads the Celery app inside the observer process to explain routing,
   visibility timeout, `task_track_started`, and beat schedule coverage.
@@ -87,6 +91,25 @@ celery-diagnostics observe \
 
 `observe` prints a startup coverage summary before the runtime loops start. In
 dry-run mode, stdout stays machine-readable JSON lines.
+
+Read-only diagnostic checks are enabled by default. Disable them explicitly
+when the observer must remain passive:
+
+```bash
+celery-diagnostics observe --no-active-probes
+```
+
+For Redis message-presence checks, the observer scans only configured queues,
+uses the default Kombu priority layout, applies a bounded scan limit, and reads
+only the protocol-v2 task id header. A missing task is reported only when all
+scanned lists were stable and decodable; partial or malformed observations
+remain inconclusive.
+
+Result-backend status checks are advertised only for a Redis backend with the
+JSON result serializer. A server-side Redis script returns the `status` field
+alone, so the Observer does not fetch the task's result value. Other result
+backends and serializers remain unsupported rather than silently loading a
+private result record through `AsyncResult.state`.
 
 ### `doctor`
 
@@ -169,6 +192,8 @@ errors do not change Celery publish behavior.
 | `CD_FLUSH_INTERVAL` | HTTP transport flush interval in seconds. |
 | `CD_SPOOL_PATH` | Optional sanitized JSONL local spool path. |
 | `CD_LOG_LEVEL` | Python logging level. |
+| `CD_ACTIVE_PROBES` | Enable bounded read-only diagnostic checks. Defaults to `1`. |
+| `CD_BROKER_MESSAGE_SCAN_LIMIT` | Maximum Redis messages inspected by one task-presence check. Defaults to `10000`, bounded to `100000`. |
 
 Every CLI option other than the project key can also be passed as an argument.
 For example:
@@ -209,6 +234,23 @@ Celery headers, and exception type/module for explicit publish failures. It
 does not send task args, kwargs, message body, raw headers, exception messages,
 or stack frames.
 
+## Optional Progress Obligation
+
+Long-running tasks can declare a privacy-safe liveness obligation without
+reporting business progress:
+
+```python
+from celery_diagnostics import report_task_progress
+
+report_task_progress(self, sequence=4, max_silence_seconds=30)
+```
+
+The helper emits only a monotonic sequence number and the declared maximum
+silence interval. It does not send percentages, customer data, task arguments,
+results, or arbitrary progress values. Celery Diagnostics treats silence as a
+stall only after the declared interval expires and the event source is still
+fresh; otherwise the execution state remains unknown.
+
 ## Local Development
 
 Install editable dependencies:
@@ -240,13 +282,17 @@ python -m build
 ```text
 celery_diagnostics/
   publisher.py        # optional producer-side publish tracker
+  progress.py         # optional privacy-safe progress obligation
 celery_diagnostics_observer/
+  active_probes.py    # bounded on-demand read-only checks
+  capabilities.py     # advertised active-check capabilities
   app_context.py      # allowlisted app-aware config extraction
   cli.py              # celery-diagnostics command implementation
   config.py           # env and CLI config normalization
   coverage.py         # doctor/status/startup coverage model
   event_receiver.py   # Celery event stream receiver
   redis_sampler.py    # Redis queue depth sampler
+  redis_message_probe.py # bounded task-id presence check for Redis
   inspect_sampler.py  # optional Celery control inspect sampler
   sanitizer.py        # privacy-safe event normalization
   transport.py        # HTTP transport and retry behavior

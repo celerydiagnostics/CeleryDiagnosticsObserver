@@ -30,9 +30,11 @@ TASK_EVENT_MAP = {
     "task-sent": ("task_published", "published"),
     "task-received": ("task_received", "received"),
     "task-started": ("task_started", "started"),
+    "task-progress": ("task_progress", "progress"),
     "task-succeeded": ("task_succeeded", "succeeded"),
     "task-failed": ("task_failed", "failed"),
     "task-retried": ("task_retried", "retried"),
+    "task-rejected": ("task_rejected", "rejected"),
     "task-revoked": ("task_revoked", "revoked"),
 }
 
@@ -141,9 +143,19 @@ def sanitize_observer_heartbeat(
     policy: TelemetryPolicy,
     transport: Any | None = None,
     status: str = "healthy",
+    capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     details = {
         "python_version": platform.python_version(),
+        "active_probe_capabilities": ",".join(
+            sorted(
+                {
+                    _safe_token(item, 128)
+                    for item in capabilities
+                    if _safe_token(item, 128)
+                }
+            )
+        ),
     }
     if transport is not None:
         for key in [
@@ -235,12 +247,24 @@ def _sanitize_task_event(
         )
     exception_type, exception_module = _exception_identity(raw_event, policy=policy)
     expired_revoke = event_type == "task-revoked" and _truthy(raw_event.get("expired"))
+    requeued_rejection = event_type == "task-rejected" and _truthy(
+        raw_event.get("requeue")
+    )
     metadata = {
         "celery_clock": _optional_non_negative_int(raw_event.get("clock")),
         "local_received": _datetime_iso(raw_event.get("local_received")),
     }
     if expired_revoke:
         metadata["expired"] = True
+    if event_type == "task-rejected":
+        metadata["requeue"] = requeued_rejection
+    if event_type == "task-progress":
+        metadata["progress_sequence"] = _optional_non_negative_int(
+            raw_event.get("progress_sequence")
+        )
+        metadata["progress_max_silence_seconds"] = _optional_positive_int(
+            raw_event.get("progress_max_silence_seconds")
+        )
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
@@ -266,6 +290,7 @@ def _sanitize_task_event(
             "root_id": _safe_token(raw_event.get("root_id"), 255),
             "parent_id": _safe_token(raw_event.get("parent_id"), 255),
             "retries": _optional_non_negative_int(raw_event.get("retries")),
+            "delivery_redelivered": requeued_rejection,
             "eta": _datetime_iso(raw_event.get("eta")),
             "runtime": _optional_float(raw_event.get("runtime")),
             "exception_type": exception_type,
@@ -409,6 +434,11 @@ def _optional_non_negative_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    parsed = _optional_non_negative_int(value)
+    return parsed if parsed is not None and parsed > 0 else None
 
 
 def _optional_float(value: Any) -> float | None:
