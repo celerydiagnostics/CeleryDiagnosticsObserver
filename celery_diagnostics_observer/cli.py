@@ -7,6 +7,8 @@ import sys
 from datetime import datetime
 from dataclasses import asdict
 
+import requests
+
 from .app_context import AppContextSnapshot, failed_app_context, inspect_celery_app, unloaded_app_context
 from .active_probes import ActiveProbeExecutor, ActiveProbeLoop
 from .capabilities import active_probe_capabilities
@@ -16,7 +18,8 @@ from .coverage import build_coverage_report, render_doctor_report, render_startu
 from .event_receiver import EventReceiver, dry_run_sample_events
 from .health import ObserverHealthLoop
 from .inspect_sampler import CeleryInspectSampler, CeleryInspectSamplerLoop
-from .policy import POLICY_CHOICES, policy_from_name
+from .identity import IdentityCapsuleError, RUN_REF_RE, identity_key_id, open_identity, task_run_ref
+from .policy import POLICY_CHOICES, POLICY_LOCAL_ONLY, policy_from_name
 from .redis_sampler import RedisQueueSampler, RedisSamplerLoop
 from .replay import export_event_replay
 from .sanitizer import sanitize_observer_heartbeat
@@ -34,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
         return status(args)
     if args.command == "replay-events":
         return replay_events(args)
+    if args.command == "resolve":
+        return resolve_identity(args)
     parser.print_help()
     return 2
 
@@ -42,6 +47,10 @@ def observe(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO), format="%(levelname)s %(message)s")
     policy = policy_from_name(config.telemetry_policy)
+    validation_error = _identity_config_error(config, policy)
+    if validation_error:
+        print(validation_error, file=sys.stderr)
+        return 2
     transport = ObserverTransport(config)
     if config.dry_run:
         for event in dry_run_sample_events(config, policy):
@@ -116,6 +125,10 @@ def replay_events(args: argparse.Namespace) -> int:
         print("CD_PROJECT_KEY environment variable is required", file=sys.stderr)
         return 2
     policy = policy_from_name(config.telemetry_policy)
+    validation_error = _identity_config_error(config, policy)
+    if validation_error:
+        print(validation_error, file=sys.stderr)
+        return 2
     anchor = datetime.fromisoformat(args.anchor) if args.anchor else None
     result = export_event_replay(
         args.input,
@@ -129,6 +142,59 @@ def replay_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_identity(args: argparse.Namespace) -> int:
+    config = _config_from_args(args)
+    run_ref = str(args.run_ref or "").strip().upper()
+    if not RUN_REF_RE.fullmatch(run_ref):
+        print("RUN_REF must use the R-XXXXXXXXXXXX format", file=sys.stderr)
+        return 2
+    if not config.project_key:
+        print("CD_PROJECT_KEY environment variable is required", file=sys.stderr)
+        return 2
+    try:
+        identity_key_id(config.identity_key)
+    except IdentityCapsuleError as error:
+        print(f"CD_IDENTITY_KEY is required: {error}", file=sys.stderr)
+        return 2
+    try:
+        response = requests.get(
+            config.identity_resolve_url + run_ref + "/",
+            headers={
+                "Authorization": f"Bearer {config.project_key}",
+                "User-Agent": "celery-diagnostics-observer",
+            },
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        identity = open_identity(
+            str(payload.get("identity_capsule") or ""),
+            identity_key=config.identity_key,
+        )
+    except (requests.RequestException, ValueError, IdentityCapsuleError) as error:
+        print(f"Could not resolve {run_ref}: {type(error).__name__}", file=sys.stderr)
+        return 1
+    if task_run_ref(identity["task_id"], identity_key=config.identity_key) != run_ref:
+        print(f"Could not resolve {run_ref}: identity capsule mismatch", file=sys.stderr)
+        return 1
+    result = {"run_ref": run_ref, **identity}
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    labels = [
+        ("Run reference", run_ref),
+        ("Task", identity.get("task_name", "")),
+        ("Celery task ID", identity.get("task_id", "")),
+        ("Queue", identity.get("queue", "")),
+        ("Routing key", identity.get("routing_key", "")),
+        ("Worker", identity.get("worker", "")),
+    ]
+    for label, value in labels:
+        if value:
+            print(f"{label}: {value}")
+    return 0
+
+
 def _app_context_for_report(config) -> AppContextSnapshot:
     if config.mode != MODE_PROJECT_AWARE or not config.app:
         return unloaded_app_context()
@@ -136,6 +202,16 @@ def _app_context_for_report(config) -> AppContextSnapshot:
         return inspect_celery_app(load_celery_app(config))
     except Exception as exc:  # noqa: BLE001
         return failed_app_context(exc)
+
+
+def _identity_config_error(config, policy) -> str:
+    if policy.name != POLICY_LOCAL_ONLY:
+        return ""
+    try:
+        identity_key_id(config.identity_key)
+    except IdentityCapsuleError as error:
+        return f"CD_IDENTITY_KEY is required for local-only mode: {error}"
+    return ""
 
 
 def _config_from_args(args: argparse.Namespace):
@@ -201,6 +277,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ISO-8601 time mapped to the public cutoff; defaults to now.",
     )
     replay_parser.add_argument("--policy", choices=sorted(POLICY_CHOICES), default=None)
+    resolve_parser = subparsers.add_parser(
+        "resolve",
+        help="Resolve a local-only task run reference inside the customer environment.",
+    )
+    resolve_parser.add_argument("run_ref", metavar="RUN_REF")
+    resolve_parser.add_argument("--ingest-url", default=None, help="Celery Diagnostics ingest base URL.")
+    resolve_parser.add_argument("--json", action="store_true")
     return parser
 
 

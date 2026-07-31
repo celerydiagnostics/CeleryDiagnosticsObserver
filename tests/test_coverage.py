@@ -12,7 +12,7 @@ from celery_diagnostics_observer.policy import policy_from_name
 
 
 def _policy():
-    return policy_from_name("balanced")
+    return policy_from_name("readable")
 
 
 def test_basic_redis_coverage_blocks_strong_topology_claims():
@@ -21,14 +21,14 @@ def test_basic_redis_coverage_blocks_strong_topology_claims():
         queues=("default",),
         project_key="cd_secret",
         ingest_url="https://ingest.example.test",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
     )
 
     report = build_coverage_report(config, _policy())
 
     assert report.diagnostic_level == "Basic Observer"
     assert report.redis_broker_sampling.status == "available"
-    assert report.worker_topology.status == "unknown"
+    assert report.worker_topology.status == "limited"
     assert "queue backlog growth" in report.safe_claims
     assert any(item.claim == "no_worker_consuming_queue" for item in report.blocked_claims)
     assert any(item.claim == "worker_wedged_after_broker_reconnect" for item in report.blocked_claims)
@@ -41,7 +41,7 @@ def test_enhanced_observer_coverage_uses_app_context_facts():
         queues=("default",),
         project_key="cd_secret",
         ingest_url="https://ingest.example.test",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
         mode="project-aware",
         app="demo.celery:app",
     )
@@ -79,7 +79,7 @@ def test_missing_broker_keeps_redis_sampling_unavailable():
         queues=(),
         project_key="",
         ingest_url="http://127.0.0.1:8000",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
     )
 
     report = build_coverage_report(config, _policy())
@@ -94,7 +94,7 @@ def test_startup_summary_redacts_secrets_and_explains_blocked_claims():
         queues=("default",),
         project_key="cd_secret",
         ingest_url="https://user:ingest-secret@ingest.example.test/api?project_key=cd_secret",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
         sample_interval=5,
     )
     report = build_coverage_report(config, _policy())
@@ -117,7 +117,7 @@ def test_doctor_report_does_not_require_project_key():
         queues=(),
         project_key="",
         ingest_url="http://127.0.0.1:8000",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
     )
     report = build_coverage_report(config, _policy())
 
@@ -135,7 +135,7 @@ def test_status_report_is_short_subset():
         queues=(),
         project_key="",
         ingest_url="http://127.0.0.1:8000",
-        telemetry_policy="balanced",
+        telemetry_policy="readable",
     )
     report = build_coverage_report(config, _policy())
 

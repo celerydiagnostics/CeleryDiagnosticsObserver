@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from celery_diagnostics_observer.active_probes import ActiveProbeExecutor
 from celery_diagnostics_observer.config import ObserverConfig
+from celery_diagnostics_observer.identity import seal_identity, task_run_ref
 from celery_diagnostics_observer.policy import policy_from_name
 
 
@@ -96,7 +97,7 @@ class _App:
 def _executor(
     inspect: _Inspect,
     *,
-    policy_name: str = "detailed",
+    policy_name: str = "readable",
     redis_client_factory=None,
 ) -> ActiveProbeExecutor:
     config = ObserverConfig(
@@ -106,6 +107,7 @@ def _executor(
         ingest_url="http://backend",
         observer_id="observer-1",
         telemetry_policy=policy_name,
+        identity_key="customer-owned-identity-key",
     )
     return ActiveProbeExecutor(
         _App(inspect),
@@ -270,20 +272,27 @@ def test_broker_probe_compares_only_protocol_identity_and_closes_client():
     assert client.closed is True
 
 
-def test_balanced_policy_matches_hashed_worker_replies_without_leaking_name():
+def test_local_only_policy_matches_worker_references_without_leaking_name():
     executor = _executor(
         _Inspect(
             active={"worker-secret": []},
             reserved={"worker-secret": []},
             scheduled={"worker-secret": []},
         ),
-        policy_name="balanced",
+        policy_name="local-only",
     )
     worker_label = executor._worker_label("worker-secret")
 
+    run_ref = task_run_ref("task-1", identity_key=executor.config.identity_key)
     result = executor.execute(
         {
             **_request("celery.inspect.query_task"),
+            "task_id": run_ref,
+            "run_ref": run_ref,
+            "identity_capsule": seal_identity(
+                {"task_id": "task-1", "worker": "worker-secret"},
+                identity_key=executor.config.identity_key,
+            ),
             "expected_workers": [worker_label],
         }
     )

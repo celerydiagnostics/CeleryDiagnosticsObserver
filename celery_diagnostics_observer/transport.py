@@ -42,6 +42,7 @@ class ObserverTransport:
     def enqueue(self, event: dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
+        event = _without_project_key(event)
         if self.config.dry_run:
             if self.config.print_sanitized_events:
                 print(json.dumps(_without_project_key(event), sort_keys=True, default=str))
@@ -61,6 +62,9 @@ class ObserverTransport:
         batch = self._drain_batch()
         if not batch:
             return False
+        # Strip credentials from new and previously spooled events. Project
+        # authentication belongs only in the HTTP header.
+        batch = [_without_project_key(event) for event in batch]
         try:
             response = self.session.post(
                 self.config.observer_events_url,
@@ -108,6 +112,5 @@ class ObserverTransport:
 
 def _without_project_key(event: dict[str, Any]) -> dict[str, Any]:
     safe = dict(event)
-    if safe.get("project_key"):
-        safe["project_key"] = "[redacted]"
+    safe.pop("project_key", None)
     return safe

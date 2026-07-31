@@ -183,7 +183,8 @@ errors do not change Celery publish behavior.
 | `CELERY_BROKER_URL` | Celery broker URL. Redis is the current observer target. |
 | `CD_QUEUES` | Comma-separated queue names to sample when `--queues` is not provided. |
 | `CD_INGEST_URL` | Celery Diagnostics ingest base URL. Defaults to `http://127.0.0.1:8000`. |
-| `CD_TELEMETRY_POLICY` | Privacy policy: `private`, `balanced`, `detailed`, or `custom`. Defaults to `balanced`. |
+| `CD_TELEMETRY_POLICY` | Identity visibility: `readable` or `local-only`. Defaults to `readable`. |
+| `CD_IDENTITY_KEY` | Customer-managed identity key. Required only for `local-only`; never sent to the Backend. |
 | `CD_OBSERVER_MODE` | `standalone` or `project-aware`. Defaults to `standalone`. |
 | `CELERY_APP` | Celery app import path used by project-aware mode, equivalent to `-A`. |
 | `CD_SAMPLE_INTERVAL` | Redis queue sample interval in seconds. |
@@ -202,12 +203,25 @@ For example:
 celery-diagnostics observe \
   --broker redis://localhost:6379/0 \
   --queues default \
-  --policy balanced
+  --policy readable
 ```
 
 ## Privacy Defaults
 
 The observer sanitizes telemetry before it leaves the customer environment.
+
+`readable` sends operational task, queue, routing, and worker identifiers.
+`local-only` sends stable HMAC references plus an authenticated encrypted
+identity capsule. The customer-managed identity key never leaves the Observer,
+and both modes collect the same lifecycle evidence.
+
+To identify a `local-only` run, execute this inside the customer environment:
+
+```bash
+CD_PROJECT_KEY=cf_xxx \
+CD_IDENTITY_KEY='customer-managed-secret' \
+celery-diagnostics resolve R-XXXXXXXXXXXX
+```
 
 Default behavior:
 
@@ -217,7 +231,8 @@ Default behavior:
 - no task payload body;
 - no raw tracebacks;
 - no frame locals;
-- project keys are redacted in dry-run output;
+- project keys appear only in the Authorization header and are never written to
+  event bodies or the local spool;
 - broker and ingest URL credentials are redacted in CLI reports.
 
 Redis queue sampling uses safe queue depth checks. Redis-only evidence can show

@@ -9,6 +9,7 @@ import pytest
 
 from celery_diagnostics_observer.cli import main
 from celery_diagnostics_observer.config import config_from_env
+from celery_diagnostics_observer.identity import seal_identity, task_run_ref
 
 
 def test_dry_run_reads_project_key_from_env(monkeypatch, capsys):
@@ -29,7 +30,7 @@ def test_dry_run_reads_project_key_from_env(monkeypatch, capsys):
     assert exit_code == 0
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert lines
-    assert all(line["project_key"] == "[redacted]" for line in lines)
+    assert all("project_key" not in line for line in lines)
     rendered = json.dumps(lines)
     assert "secret" not in rendered
 
@@ -72,7 +73,7 @@ def test_module_entrypoint_runs_cli():
     )
 
     assert result.returncode == 0
-    assert "[redacted]" in result.stdout
+    assert "project_key" not in result.stdout
     assert "cd_secret" not in result.stdout
 
 
@@ -85,6 +86,41 @@ def test_help_supports_observe_doctor_and_status(capsys):
     assert "observe" in output
     assert "doctor" in output
     assert "status" in output
+    assert "resolve" in output
+
+
+def test_resolve_decrypts_identity_only_in_observer_process(monkeypatch, capsys):
+    identity_key = "customer-managed-identity-key"
+    raw_task_id = "9d7c08ce-e755-4f51-b9f7-f2ab217cb86a"
+    run_ref = task_run_ref(raw_task_id, identity_key=identity_key)
+    capsule = seal_identity(
+        {
+            "task_id": raw_task_id,
+            "task_name": "billing.tasks.charge",
+            "queue": "billing",
+            "worker": "celery@worker-1",
+        },
+        identity_key=identity_key,
+    )
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"run_ref": run_ref, "identity_capsule": capsule}
+
+    monkeypatch.setenv("CD_PROJECT_KEY", "cd_secret")
+    monkeypatch.setenv("CD_IDENTITY_KEY", identity_key)
+    monkeypatch.setattr("celery_diagnostics_observer.cli.requests.get", lambda *args, **kwargs: Response())
+
+    exit_code = main(["resolve", run_ref, "--json"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["run_ref"] == run_ref
+    assert result["task_id"] == raw_task_id
+    assert result["task_name"] == "billing.tasks.charge"
 
 
 @pytest.mark.parametrize("argv", [["observe", "--help"], ["doctor", "--help"], ["status", "--help"]])
@@ -213,7 +249,8 @@ def test_existing_observer_env_names_are_preserved(monkeypatch):
     monkeypatch.setenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("CD_OBSERVER_MODE", "project-aware")
     monkeypatch.setenv("CD_SAMPLE_INTERVAL", "7")
-    monkeypatch.setenv("CD_TELEMETRY_POLICY", "private")
+    monkeypatch.setenv("CD_TELEMETRY_POLICY", "local-only")
+    monkeypatch.setenv("CD_IDENTITY_KEY", "customer-owned-test-key")
     monkeypatch.setenv("CELERY_APP", "demo.celery:app")
 
     config = config_from_env({})
@@ -221,7 +258,8 @@ def test_existing_observer_env_names_are_preserved(monkeypatch):
     assert config.broker_url == "redis://localhost:6379/0"
     assert config.mode == "project-aware"
     assert config.sample_interval == 7
-    assert config.telemetry_policy == "private"
+    assert config.telemetry_policy == "local-only"
+    assert config.identity_key == "customer-owned-test-key"
     assert config.app == "demo.celery:app"
 
 

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .config import ObserverConfig
+from .identity import identity_ref, seal_identity, task_run_ref
 from .policy import TelemetryPolicy
 
 
@@ -77,7 +78,6 @@ def sanitize_queue_snapshot(
     label, is_hashed = _label(queue, allowed=policy.send_queue_names, kind="queue", config=config)
     return {
         "schema_version": SCHEMA_VERSION,
-        "project_key": config.project_key,
         "observer_id": config.observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
@@ -118,7 +118,6 @@ def sanitize_worker_snapshot(
             queues.append(queue_label)
     return {
         "schema_version": SCHEMA_VERSION,
-        "project_key": config.project_key,
         "observer_id": config.observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
@@ -169,7 +168,6 @@ def sanitize_observer_heartbeat(
                 details[key] = getattr(transport, key)
     return {
         "schema_version": SCHEMA_VERSION,
-        "project_key": config.project_key,
         "observer_id": config.observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
@@ -246,6 +244,28 @@ def _sanitize_task_event(
             config=config,
         )
     exception_type, exception_module = _exception_identity(raw_event, policy=policy)
+    run_ref = (
+        task_run_ref(task_id, identity_key=config.identity_key)
+        if policy.identities_local_only
+        else ""
+    )
+    raw_worker = "" if event_type == "task-sent" else str(
+        raw_event.get("hostname") or raw_event.get("worker") or ""
+    ).strip()
+    identity_capsule = (
+        seal_identity(
+            {
+                "task_id": task_id,
+                "task_name": raw_event.get("name") or raw_event.get("task") or "",
+                "queue": raw_event.get("queue") or raw_event.get("routing_key") or "",
+                "routing_key": raw_event.get("routing_key") or "",
+                "worker": raw_worker,
+            },
+            identity_key=config.identity_key,
+        )
+        if policy.identities_local_only
+        else ""
+    )
     expired_revoke = event_type == "task-revoked" and _truthy(raw_event.get("expired"))
     requeued_rejection = event_type == "task-rejected" and _truthy(
         raw_event.get("requeue")
@@ -268,14 +288,15 @@ def _sanitize_task_event(
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
-            "project_key": config.project_key,
             "observer_id": config.observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
             "source": "celery_event_stream",
             "event_type": event_type,
             "normalized_event_type": normalized_type,
-            "task_id": task_id,
+            "task_id": run_ref or task_id,
+            "run_ref": run_ref,
+            "identity_capsule": identity_capsule,
             "task_name": task_name,
             "task_name_is_hashed": task_name_hashed,
             "queue": queue,
@@ -287,8 +308,8 @@ def _sanitize_task_event(
             "state": "expired" if expired_revoke else state,
             "event_timestamp": _datetime_iso(raw_event.get("timestamp")) or observed_at,
             "observed_at": observed_at,
-            "root_id": _safe_token(raw_event.get("root_id"), 255),
-            "parent_id": _safe_token(raw_event.get("parent_id"), 255),
+            "root_id": _task_relation_ref(raw_event.get("root_id"), config=config, policy=policy),
+            "parent_id": _task_relation_ref(raw_event.get("parent_id"), config=config, policy=policy),
             "retries": _optional_non_negative_int(raw_event.get("retries")),
             "delivery_redelivered": requeued_rejection,
             "eta": _datetime_iso(raw_event.get("eta")),
@@ -321,7 +342,6 @@ def _sanitize_worker_event(
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
-            "project_key": config.project_key,
             "observer_id": config.observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
@@ -348,7 +368,19 @@ def _label(value: Any, *, allowed: bool, kind: str, config: ObserverConfig) -> t
         return "", False
     if allowed:
         return _safe_token(raw, 255), False
-    return f"{kind}_{stable_hash(raw, salt=config.project_key).split(':', 1)[1][:16]}", True
+    return identity_ref(kind, raw, identity_key=config.identity_key), True
+
+
+def _task_relation_ref(
+    value: Any,
+    *,
+    config: ObserverConfig,
+    policy: TelemetryPolicy,
+) -> str:
+    raw = _safe_token(value, 255)
+    if not raw or not policy.identities_local_only:
+        return raw
+    return task_run_ref(raw, identity_key=config.identity_key)
 
 
 def _exception_identity(raw_event: dict[str, Any], *, policy: TelemetryPolicy) -> tuple[str | None, str | None]:

@@ -22,6 +22,7 @@ class SuccessSession:
 
     def post(self, *_args, **_kwargs):
         self.calls += 1
+        self.kwargs = _kwargs
         return SuccessResponse()
 
 
@@ -50,3 +51,33 @@ def test_transport_keeps_failed_batch_for_retry_without_spool():
     assert transport.flush_once(force=True) is True
     assert success.calls == 1
     assert transport.sent_event_count == 1
+
+
+def test_transport_keeps_project_key_only_in_authorization_header(tmp_path):
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_transport_secret",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+        spool_path=str(tmp_path / "observer.jsonl"),
+    )
+    transport = ObserverTransport(config)
+    transport.session = FailingSession()
+    transport.enqueue(
+        {
+            "schema_version": "observer.v1",
+            "event_type": "observer_heartbeat",
+            "project_key": "cd_transport_secret",
+        }
+    )
+
+    assert transport.flush_once(force=True) is True
+    assert "cd_transport_secret" not in (tmp_path / "observer.jsonl").read_text()
+
+    transport._retry_state.next_retry_at = 0
+    success = SuccessSession()
+    transport.session = success
+    assert transport.flush_once(force=True) is True
+    assert success.kwargs["headers"]["Authorization"] == "Bearer cd_transport_secret"
+    assert all("project_key" not in event for event in success.kwargs["json"]["events"])

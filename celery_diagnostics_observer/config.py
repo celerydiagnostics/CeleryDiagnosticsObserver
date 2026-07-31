@@ -21,6 +21,7 @@ class ObserverConfig:
     project_key: str
     ingest_url: str
     telemetry_policy: str = DEFAULT_POLICY
+    identity_key: str = ""
     mode: str = MODE_STANDALONE
     app: str = ""
     observer_id: str = ""
@@ -42,6 +43,7 @@ class ObserverConfig:
         set_value(self, "project_key", str(self.project_key or ""))
         set_value(self, "ingest_url", str(self.ingest_url or "http://127.0.0.1:8000"))
         set_value(self, "telemetry_policy", normalize_policy_name(self.telemetry_policy))
+        set_value(self, "identity_key", str(self.identity_key or ""))
         mode = str(self.mode or MODE_STANDALONE).strip().lower().replace("_", "-")
         set_value(self, "mode", mode if mode in MODE_CHOICES else MODE_STANDALONE)
         set_value(self, "app", str(self.app or ""))
@@ -79,6 +81,10 @@ class ObserverConfig:
         return self.ingest_url.rstrip("/") + "/api/ingest/observer/probes/result/"
 
     @property
+    def identity_resolve_url(self) -> str:
+        return self.ingest_url.rstrip("/") + "/api/ingest/observer/identities/"
+
+    @property
     def broker_type(self) -> str:
         return self.broker_url.split(":", 1)[0].lower() if ":" in self.broker_url else ""
 
@@ -97,6 +103,7 @@ def config_from_env(overrides: dict[str, Any] | None = None) -> ObserverConfig:
         project_key=os.getenv("CD_PROJECT_KEY", ""),
         ingest_url=overrides.get("ingest_url") or os.getenv("CD_INGEST_URL", "http://127.0.0.1:8000"),
         telemetry_policy=overrides.get("telemetry_policy") or os.getenv("CD_TELEMETRY_POLICY", DEFAULT_POLICY),
+        identity_key=overrides.get("identity_key") or os.getenv("CD_IDENTITY_KEY", ""),
         mode=overrides.get("mode") or os.getenv("CD_OBSERVER_MODE", MODE_STANDALONE),
         app=overrides.get("app") or os.getenv("CELERY_APP", ""),
         observer_id=overrides.get("observer_id") or os.getenv("CD_OBSERVER_ID", ""),

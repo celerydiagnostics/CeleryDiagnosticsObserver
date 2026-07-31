@@ -27,7 +27,7 @@ class _App:
     conf = _Conf()
 
 
-def test_detailed_observer_advertises_only_implemented_read_only_capabilities():
+def test_readable_observer_advertises_only_implemented_read_only_capabilities():
     config = ObserverConfig(
         broker_url="redis://redis:6379/0",
         queues=("celery",),
@@ -37,7 +37,7 @@ def test_detailed_observer_advertises_only_implemented_read_only_capabilities():
     capabilities = active_probe_capabilities(
         _App(),
         config,
-        policy_from_name("detailed"),
+        policy_from_name("readable"),
     )
 
     assert "celery.inspect.query_task" in capabilities
@@ -63,7 +63,7 @@ def test_result_status_is_not_advertised_for_payload_fetching_backend():
     capabilities = active_probe_capabilities(
         App(),
         config,
-        policy_from_name("detailed"),
+        policy_from_name("readable"),
     )
 
     assert "celery.result_backend.status" not in capabilities
@@ -87,7 +87,7 @@ def test_result_status_is_not_advertised_for_non_json_serializer():
     capabilities = active_probe_capabilities(
         App(),
         config,
-        policy_from_name("detailed"),
+        policy_from_name("readable"),
     )
 
     assert "celery.result_backend.status" not in capabilities
@@ -104,7 +104,7 @@ def test_active_checks_are_independent_of_payload_detail_policy():
     capabilities = active_probe_capabilities(
         _App(),
         config,
-        policy_from_name("balanced"),
+        policy_from_name("readable"),
     )
 
     assert "celery.inspect.query_task" in capabilities
@@ -124,7 +124,7 @@ def test_active_checks_can_be_disabled_explicitly():
         active_probe_capabilities(
             _App(),
             config,
-            policy_from_name("detailed"),
+            policy_from_name("readable"),
         )
         == ()
     )
@@ -139,7 +139,7 @@ def test_heartbeat_carries_a_sanitized_capability_manifest():
             ingest_url="http://backend",
             observer_id="observer-1",
         ),
-        policy=policy_from_name("detailed"),
+        policy=policy_from_name("readable"),
         capabilities=("celery.inspect.query_task", "celery.result_backend.status"),
     )
 
@@ -168,7 +168,7 @@ def test_heartbeat_does_not_truncate_the_declared_capability_manifest():
             ingest_url="http://backend",
             observer_id="observer-1",
         ),
-        policy=policy_from_name("detailed"),
+        policy=policy_from_name("readable"),
         capabilities=capabilities,
     )
 

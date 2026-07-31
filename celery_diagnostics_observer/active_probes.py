@@ -12,10 +12,11 @@ import requests
 
 from .capabilities import active_probe_capabilities
 from .config import ObserverConfig
+from .identity import IdentityCapsuleError, identity_ref, open_identity, task_run_ref
 from .policy import TelemetryPolicy
 from .redis_message_probe import redis_task_message_present
 from .redis_result_probe import redis_result_status
-from .sanitizer import redact_url_credentials, stable_hash
+from .sanitizer import redact_url_credentials
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,13 @@ class ActiveProbeExecutor:
                 "latency_seconds": time.monotonic() - started,
             }
         try:
+            request = self._resolve_local_identity(request)
             outcome = handler(request)
+        except IdentityCapsuleError as error:
+            outcome = {
+                "complete": False,
+                "error_type": str(error),
+            }
         except Exception as error:  # noqa: BLE001
             logger.warning(
                 "active diagnostic probe failed capability=%s error=%s",
@@ -94,6 +101,25 @@ class ActiveProbeExecutor:
             **outcome,
             "latency_seconds": time.monotonic() - started,
         }
+
+    def _resolve_local_identity(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not self.policy.identities_local_only:
+            return request
+        capsule = str(request.get("identity_capsule") or "")
+        if not capsule:
+            raise IdentityCapsuleError("identity_capsule_unavailable")
+        identity = open_identity(capsule, identity_key=self.config.identity_key)
+        expected_ref = str(request.get("run_ref") or request.get("task_id") or "")
+        actual_ref = task_run_ref(
+            identity["task_id"],
+            identity_key=self.config.identity_key,
+        )
+        if expected_ref and expected_ref != actual_ref:
+            raise IdentityCapsuleError("identity_capsule_mismatch")
+        resolved = dict(request)
+        resolved["run_ref"] = actual_ref
+        resolved["task_id"] = identity["task_id"]
+        return resolved
 
     def _query_task(self, request: dict[str, Any]) -> dict[str, Any]:
         task_id = _required(request, "task_id")
@@ -624,8 +650,7 @@ def _privacy_label(
         return ""
     if allowed:
         return raw[:255]
-    digest = stable_hash(raw, salt=config.project_key).split(":", 1)[1][:16]
-    return f"{kind}_{digest}"
+    return identity_ref(kind, raw, identity_key=config.identity_key)
 
 
 __all__ = ["ActiveProbeExecutor", "ActiveProbeLoop"]

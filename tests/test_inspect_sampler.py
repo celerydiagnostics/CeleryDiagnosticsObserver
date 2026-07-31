@@ -42,7 +42,7 @@ def test_inspect_sampler_sends_only_sanitized_worker_summary():
         ingest_url="http://ingest",
         observer_id="obs-1",
     )
-    sampler = CeleryInspectSampler(FakeApp(), config, policy_from_name("detailed"))
+    sampler = CeleryInspectSampler(FakeApp(), config, policy_from_name("readable"))
 
     snapshots = sampler.sample_once()
 

@@ -3,20 +3,22 @@ from __future__ import annotations
 import json
 
 from celery_diagnostics_observer.config import ObserverConfig
+from celery_diagnostics_observer.identity import open_identity
 from celery_diagnostics_observer.policy import policy_from_name
 from celery_diagnostics_observer.redis_sampler import RedisQueueSampler
 from celery_diagnostics_observer.sanitizer import sanitize_celery_event, sanitize_queue_snapshot
 
 
-def test_private_policy_hashes_task_queue_and_worker_and_strips_forbidden_fields():
+def test_local_only_policy_references_identifiers_and_strips_forbidden_fields():
     config = ObserverConfig(
         broker_url="redis://:secret@redis:6379/0",
         queues=("private-queue",),
         project_key="cd_secret",
         ingest_url="http://ingest",
         observer_id="obs-1",
+        identity_key="customer-owned-identity-key",
     )
-    policy = policy_from_name("private")
+    policy = policy_from_name("local-only")
 
     payload = sanitize_celery_event(
         {
@@ -37,21 +39,35 @@ def test_private_policy_hashes_task_queue_and_worker_and_strips_forbidden_fields
     )
 
     assert payload is not None
-    assert payload["task_name"].startswith("task_")
+    assert payload["task_id"].startswith("R-")
+    assert payload["run_ref"] == payload["task_id"]
+    assert payload["task_name"].startswith("T-")
     assert payload["task_name_is_hashed"] is True
-    assert payload["queue"].startswith("queue_")
+    assert payload["queue"].startswith("Q-")
     assert payload["queue_is_hashed"] is True
-    assert payload["worker"].startswith("worker_")
+    assert payload["worker"].startswith("W-")
     assert payload["worker_is_hashed"] is True
     assert payload["exception_type"] == "CardDeclined"
     assert payload["exception_module"] is None
+    assert "project_key" not in payload
+    identity = open_identity(
+        payload["identity_capsule"],
+        identity_key=config.identity_key,
+    )
+    assert identity == {
+        "task_id": "task-1",
+        "task_name": "billing.tasks.charge_customer",
+        "queue": "private-queue",
+        "routing_key": "private-queue",
+        "worker": "celery@worker-1",
+    }
     rendered = json.dumps(payload, sort_keys=True)
     assert "customer-secret" not in rendered
     assert "token" not in rendered
     assert "4242" not in rendered
 
 
-def test_balanced_policy_sends_task_and_queue_but_hashes_worker():
+def test_readable_policy_sends_operational_identifiers():
     config = ObserverConfig(
         broker_url="redis://redis:6379/0",
         queues=("default",),
@@ -59,7 +75,7 @@ def test_balanced_policy_sends_task_and_queue_but_hashes_worker():
         ingest_url="http://ingest",
         observer_id="obs-1",
     )
-    policy = policy_from_name("balanced")
+    policy = policy_from_name("readable")
 
     payload = sanitize_celery_event(
         {
@@ -78,8 +94,12 @@ def test_balanced_policy_sends_task_and_queue_but_hashes_worker():
     assert payload["task_name_is_hashed"] is False
     assert payload["queue"] == "emails"
     assert payload["queue_is_hashed"] is False
-    assert payload["worker"].startswith("worker_")
-    assert payload["worker_is_hashed"] is True
+    assert payload["worker"] == "celery@email-worker"
+    assert payload["worker_is_hashed"] is False
+    assert payload["task_id"] == "task-2"
+    assert payload["run_ref"] == ""
+    assert payload["identity_capsule"] == ""
+    assert "project_key" not in payload
 
 
 def test_task_sent_does_not_treat_producer_hostname_as_worker():
@@ -100,7 +120,7 @@ def test_task_sent_does_not_treat_producer_hostname_as_worker():
             "hostname": "web@producer-1",
         },
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload is not None
@@ -130,7 +150,7 @@ def test_task_failed_unwraps_time_limit_from_exception_with_traceback_result():
             "result": "billiard.exceptions.TimeLimitExceeded(1,)",
         },
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload is not None
@@ -159,7 +179,7 @@ def test_expired_revoke_preserves_expired_hint():
             "expired": True,
         },
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload is not None
@@ -190,7 +210,7 @@ def test_requeued_rejection_preserves_delivery_semantics_without_payload():
             "result": {"card": "4242"},
         },
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload is not None
@@ -224,7 +244,7 @@ def test_task_progress_keeps_only_sequence_and_declared_silence_obligation():
             "args": ["private"],
         },
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload is not None
@@ -250,7 +270,7 @@ def test_queue_snapshot_represents_redis_consumers_as_unknown():
         messages_ready_approx=42,
         sampled_at=None,
         config=config,
-        policy=policy_from_name("balanced"),
+        policy=policy_from_name("readable"),
     )
 
     assert payload["messages_ready_approx"] == 42
@@ -284,7 +304,7 @@ def test_redis_sampler_uses_llen_only():
         ingest_url="http://ingest",
         observer_id="obs-1",
     )
-    sampler = RedisQueueSampler(config, policy_from_name("balanced"), client_factory=lambda _url: fake)
+    sampler = RedisQueueSampler(config, policy_from_name("readable"), client_factory=lambda _url: fake)
 
     snapshots = sampler.sample_once()
 

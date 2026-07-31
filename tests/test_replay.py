@@ -55,14 +55,14 @@ def test_public_capture_replay_preserves_intervals_and_privacy(tmp_path):
         project_key="cf_replay",
         ingest_url="http://ingest",
         observer_id="research-replay",
-        telemetry_policy="detailed",
+        telemetry_policy="readable",
     )
 
     result = export_event_replay(
         source,
         destination,
         config=config,
-        policy=policy_from_name("detailed"),
+        policy=policy_from_name("readable"),
         cutoff=105.0,
         anchor=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
     )
