@@ -246,12 +246,51 @@ def test_received_event_preserves_broker_redelivery_marker():
     )
 
     assert payload is not None
+    assert payload["event_type"] == "task-received"
     assert payload["normalized_event_type"] == "task_received"
     assert payload["delivery_redelivered"] is True
     rendered = json.dumps(payload, sort_keys=True)
     assert "customer-secret" not in rendered
     assert "token" not in rendered
     assert "4242" not in rendered
+
+
+def test_public_delivery_fact_preserves_attempt_discriminators_only():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-delivery-fact",
+            "uuid": "task-redelivered",
+            "hostname": "celery@worker-2",
+            "application_retry_index": 1,
+            "delivery_info": {
+                "routing_key": "default",
+                "redelivered": True,
+                "priority": 0,
+            },
+            "execution_pid": 12345,
+            "args": ["private"],
+        },
+        config=config,
+        policy=policy_from_name("readable"),
+    )
+
+    assert payload is not None
+    assert payload["event_type"] == "task-received"
+    assert payload["normalized_event_type"] == "task_received"
+    assert payload["queue"] == "default"
+    assert payload["retries"] == 1
+    assert payload["delivery_redelivered"] is True
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "execution_pid" not in rendered
+    assert '"args"' not in rendered
 
 
 def test_task_progress_keeps_only_sequence_and_declared_silence_obligation():

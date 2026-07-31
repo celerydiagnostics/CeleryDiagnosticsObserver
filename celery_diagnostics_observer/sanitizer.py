@@ -37,6 +37,11 @@ TASK_EVENT_MAP = {
     "task-retried": ("task_retried", "retried"),
     "task-rejected": ("task_rejected", "rejected"),
     "task-revoked": ("task_revoked", "revoked"),
+    # Payload-free runtime fact emitted by the article testbed because Celery's
+    # stock Redis task events do not consistently retain the transport
+    # redelivery marker.  It is normalized as receipt evidence for the delivery
+    # attempt that emitted it.
+    "task-delivery-fact": ("task_received", "received"),
 }
 
 WORKER_EVENT_MAP = {
@@ -216,6 +221,8 @@ def _sanitize_task_event(
         return None
     normalized_type, state = TASK_EVENT_MAP[event_type]
     observed_at = utc_now_iso()
+    delivery_info = raw_event.get("delivery_info")
+    delivery_info = delivery_info if isinstance(delivery_info, dict) else {}
     task_name, task_name_hashed = _label(
         raw_event.get("name") or raw_event.get("task") or "",
         allowed=policy.send_task_names,
@@ -223,13 +230,16 @@ def _sanitize_task_event(
         config=config,
     )
     queue, queue_hashed = _label(
-        raw_event.get("queue") or raw_event.get("routing_key") or "",
+        raw_event.get("queue")
+        or raw_event.get("routing_key")
+        or delivery_info.get("routing_key")
+        or "",
         allowed=policy.send_queue_names,
         kind="queue",
         config=config,
     )
     routing_key, routing_key_hashed = _label(
-        raw_event.get("routing_key") or "",
+        raw_event.get("routing_key") or delivery_info.get("routing_key") or "",
         allowed=policy.send_routing_labels,
         kind="route",
         config=config,
@@ -270,8 +280,9 @@ def _sanitize_task_event(
     requeued_rejection = event_type == "task-rejected" and _truthy(
         raw_event.get("requeue")
     )
-    delivery_info = raw_event.get("delivery_info")
-    delivery_info = delivery_info if isinstance(delivery_info, dict) else {}
+    public_event_type = (
+        "task-received" if event_type == "task-delivery-fact" else event_type
+    )
     delivery_redelivered = requeued_rejection or _truthy(
         raw_event.get("redelivered") or delivery_info.get("redelivered")
     )
@@ -297,7 +308,7 @@ def _sanitize_task_event(
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
             "source": "celery_event_stream",
-            "event_type": event_type,
+            "event_type": public_event_type,
             "normalized_event_type": normalized_type,
             "task_id": run_ref or task_id,
             "run_ref": run_ref,
@@ -315,7 +326,11 @@ def _sanitize_task_event(
             "observed_at": observed_at,
             "root_id": _task_relation_ref(raw_event.get("root_id"), config=config, policy=policy),
             "parent_id": _task_relation_ref(raw_event.get("parent_id"), config=config, policy=policy),
-            "retries": _optional_non_negative_int(raw_event.get("retries")),
+            "retries": _optional_non_negative_int(
+                raw_event.get("retries")
+                if raw_event.get("retries") is not None
+                else raw_event.get("application_retry_index")
+            ),
             "delivery_redelivered": delivery_redelivered,
             "eta": _datetime_iso(raw_event.get("eta")),
             "runtime": _optional_float(raw_event.get("runtime")),
