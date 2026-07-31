@@ -98,36 +98,26 @@ class ActiveProbeExecutor:
     def _query_task(self, request: dict[str, Any]) -> dict[str, Any]:
         task_id = _required(request, "task_id")
         expected = _expected_workers(request)
-        inspector = self._inspector(request)
-        active = inspector.active() or {}
-        reserved = inspector.reserved() or {}
-        scheduled = inspector.scheduled() or {}
-        active_match = _find_task(active, task_id)
-        if active_match is not None:
+        queried = self._inspector(request).query_task(task_id) or {}
+        match = _find_queried_task(queried, task_id)
+        replies = self._reply_labels(queried)
+        if match is not None and match[1] == "active":
             return _positive(
                 "active",
                 "active",
                 expected=expected,
-                replies=self._reply_labels(active),
-                worker=active_match,
+                replies=replies,
+                worker=match[0],
             )
-        location = ""
-        match = _find_task(reserved, task_id)
         if match is not None:
-            location = "reserved"
+            location = "scheduled" if match[1] == "ready" else "reserved"
+            complete = True
         else:
-            match = _find_task(scheduled, task_id)
-            if match is not None:
-                location = "scheduled"
-        replies = (
-            self._reply_labels(active)
-            & self._reply_labels(reserved)
-            & self._reply_labels(scheduled)
-        )
-        complete = _negative_complete(expected, replies)
+            location = "not_active"
+            complete = _negative_complete(expected, replies)
         return _negative(
             "absent",
-            location or "not_active",
+            location,
             complete=complete,
             expected=expected,
             replies=replies,
@@ -136,21 +126,25 @@ class ActiveProbeExecutor:
     def _query_reservation(self, request: dict[str, Any]) -> dict[str, Any]:
         task_id = _required(request, "task_id")
         expected = _expected_workers(request)
-        reserved = (self._inspector(request).reserved() or {})
-        match = _find_task(reserved, task_id)
-        if match is not None:
+        queried = self._inspector(request).query_task(task_id) or {}
+        match = _find_queried_task(queried, task_id)
+        replies = self._reply_labels(queried)
+        if match is not None and match[1] in {"reserved", "ready"}:
             return _positive(
                 "reserved",
-                "reserved",
+                "scheduled" if match[1] == "ready" else "reserved",
                 expected=expected,
-                replies=self._reply_labels(reserved),
-                worker=match,
+                replies=replies,
+                worker=match[0],
             )
-        replies = self._reply_labels(reserved)
         return _negative(
             "not_reserved",
             "not_reserved",
-            complete=_negative_complete(expected, replies),
+            complete=(
+                True
+                if match is not None
+                else _negative_complete(expected, replies)
+            ),
             expected=expected,
             replies=replies,
         )
@@ -177,7 +171,7 @@ class ActiveProbeExecutor:
 
     def _query_capacity(self, request: dict[str, Any]) -> dict[str, Any]:
         expected = _expected_workers(request)
-        inspector = self._inspector(request)
+        inspector = self._inspector(request, request_count=2)
         active = self._labeled_mapping(inspector.active() or {})
         stats = self._labeled_mapping(inspector.stats() or {})
         replies = set(active) & set(stats)
@@ -325,11 +319,16 @@ class ActiveProbeExecutor:
             "queue": self._queue_label(queue),
         }
 
-    def _inspector(self, request: dict[str, Any]):
+    def _inspector(self, request: dict[str, Any], *, request_count: int = 1):
         timeout = _bounded_timeout(request.get("timeout_seconds"))
+        timeout = max(0.2, timeout / max(1, request_count))
         expected = _expected_workers(request)
         kwargs: dict[str, Any] = {"timeout": timeout}
-        if expected and self.policy.send_worker_names:
+        if (
+            expected
+            and self.policy.send_worker_names
+            and all(_is_routable_worker_name(worker) for worker in expected)
+        ):
             kwargs["destination"] = expected
         return self.app.control.inspect(**kwargs)
 
@@ -480,20 +479,21 @@ def _expected_workers(request: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted({str(item).strip() for item in values if str(item).strip()}))
 
 
-def _find_task(payload: Any, task_id: str) -> str | None:
+def _find_queried_task(
+    payload: Any,
+    task_id: str,
+) -> tuple[str, str] | None:
     if not isinstance(payload, dict):
         return None
     for worker, rows in payload.items():
-        if not isinstance(rows, list):
+        if not isinstance(rows, dict) or task_id not in rows:
             continue
-        for row in rows:
-            candidate = row
-            if isinstance(row, dict) and isinstance(row.get("request"), dict):
-                candidate = row["request"]
-            if not isinstance(candidate, dict):
-                continue
-            if str(candidate.get("id") or candidate.get("uuid") or "") == task_id:
-                return str(worker)
+        value = rows[task_id]
+        if not isinstance(value, (list, tuple)) or not value:
+            continue
+        state = str(value[0] or "").strip().lower()
+        if state:
+            return str(worker), state
     return None
 
 
@@ -502,6 +502,15 @@ def _negative_complete(
     replies: set[str],
 ) -> bool:
     return bool(expected and set(expected).issubset(replies))
+
+
+def _is_routable_worker_name(value: str) -> bool:
+    """Return false for privacy aliases that Celery cannot use as destinations."""
+    normalized = str(value or "").strip()
+    is_privacy_alias = (
+        normalized.lower().startswith("worker_") and "@" not in normalized
+    )
+    return bool(normalized) and not is_privacy_alias
 
 
 def _positive(

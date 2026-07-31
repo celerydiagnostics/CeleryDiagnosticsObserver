@@ -35,6 +35,25 @@ class _Inspect:
     def stats(self):
         return self._stats
 
+    def query_task(self, task_id):
+        workers = {
+            *self._active,
+            *self._reserved,
+            *self._scheduled,
+        }
+        result = {worker: {} for worker in workers}
+        for state, payload in [
+            ("active", self._active),
+            ("reserved", self._reserved),
+            ("ready", self._scheduled),
+        ]:
+            for worker, rows in payload.items():
+                for row in rows:
+                    candidate = row.get("request", row) if isinstance(row, dict) else {}
+                    if str(candidate.get("id") or candidate.get("uuid") or "") == task_id:
+                        result[worker][task_id] = [state, candidate]
+        return result
+
 
 class _Control:
     def __init__(self, inspect):
@@ -118,6 +137,24 @@ def test_positive_task_match_is_reliable_even_when_other_workers_do_not_reply():
     assert result["outcome_id"] == "active"
     assert result["complete"] is True
     assert result["matched_location"] == "active"
+    assert len(executor.app.control.calls) == 1
+
+
+def test_protected_worker_alias_uses_broadcast_and_accepts_positive_match():
+    executor = _executor(
+        _Inspect(active={"celery@worker-host": [{"id": "task-1"}]})
+    )
+
+    result = executor.execute(
+        {
+            **_request("celery.inspect.query_task"),
+            "expected_workers": ["WORKER_2c7fc0b2d11b"],
+        }
+    )
+
+    assert result["outcome_id"] == "active"
+    assert result["complete"] is True
+    assert "destination" not in executor.app.control.calls[0]
 
 
 def test_negative_task_result_requires_all_expected_worker_replies():
@@ -134,6 +171,19 @@ def test_negative_task_result_requires_all_expected_worker_replies():
     assert "outcome_id" not in result
     assert result["complete"] is False
     assert result["error_type"] == "partial_reply"
+
+
+def test_non_active_query_match_is_reliable_without_three_control_round_trips():
+    executor = _executor(
+        _Inspect(reserved={"worker-a": [{"id": "task-1"}]})
+    )
+
+    result = executor.execute(_request("celery.inspect.query_task"))
+
+    assert result["outcome_id"] == "absent"
+    assert result["complete"] is True
+    assert result["matched_location"] == "reserved"
+    assert len(executor.app.control.calls) == 1
 
 
 def test_no_consumers_is_reliable_only_with_complete_topology_replies():

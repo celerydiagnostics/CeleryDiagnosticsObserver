@@ -476,5 +476,8 @@ def _safe_details(value: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(item, int):
             details[key] = max(0, item)
         else:
-            details[key] = _safe_token(item, 128)
+            details[key] = _safe_token(
+                item,
+                1024 if key == "active_probe_capabilities" else 128,
+            )
     return details
