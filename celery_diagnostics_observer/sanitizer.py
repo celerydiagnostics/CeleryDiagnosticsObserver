@@ -270,6 +270,11 @@ def _sanitize_task_event(
     requeued_rejection = event_type == "task-rejected" and _truthy(
         raw_event.get("requeue")
     )
+    delivery_info = raw_event.get("delivery_info")
+    delivery_info = delivery_info if isinstance(delivery_info, dict) else {}
+    delivery_redelivered = requeued_rejection or _truthy(
+        raw_event.get("redelivered") or delivery_info.get("redelivered")
+    )
     metadata = {
         "celery_clock": _optional_non_negative_int(raw_event.get("clock")),
         "local_received": _datetime_iso(raw_event.get("local_received")),
@@ -311,7 +316,7 @@ def _sanitize_task_event(
             "root_id": _task_relation_ref(raw_event.get("root_id"), config=config, policy=policy),
             "parent_id": _task_relation_ref(raw_event.get("parent_id"), config=config, policy=policy),
             "retries": _optional_non_negative_int(raw_event.get("retries")),
-            "delivery_redelivered": requeued_rejection,
+            "delivery_redelivered": delivery_redelivered,
             "eta": _datetime_iso(raw_event.get("eta")),
             "runtime": _optional_float(raw_event.get("runtime")),
             "exception_type": exception_type,

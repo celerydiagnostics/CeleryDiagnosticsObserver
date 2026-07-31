@@ -11,7 +11,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 CAPSULE_VERSION = "v1"
-RUN_REF_RE = re.compile(r"^R-[A-Z2-7]{12}$")
+REFERENCE_TOKEN_LENGTH = 20
+RUN_REF_RE = re.compile(rf"^R-[A-Z2-7]{{{REFERENCE_TOKEN_LENGTH}}}$")
 _IDENTITY_FIELDS = ("task_id", "task_name", "queue", "routing_key", "worker")
 _PREFIXES = {
     "task": "T",
@@ -48,7 +49,16 @@ def identity_ref(kind: str, value: Any, *, identity_key: str) -> str:
 
 
 def task_run_ref(task_id: Any, *, identity_key: str) -> str:
-    return identity_ref("run", task_id, identity_key=identity_key)
+    raw = str(task_id or "").strip()
+    if not raw:
+        return ""
+    digest = hmac.new(
+        _required_key(identity_key),
+        f"celery-diagnostics:run:{raw}".encode("utf-8", errors="replace"),
+        hashlib.sha256,
+    ).digest()
+    token = base64.b32encode(digest).decode("ascii").rstrip("=")[:REFERENCE_TOKEN_LENGTH]
+    return f"R-{token}"
 
 
 def seal_identity(values: Mapping[str, Any], *, identity_key: str) -> str:
@@ -99,6 +109,7 @@ def _required_key(identity_key: str) -> bytes:
 
 __all__ = [
     "IdentityCapsuleError",
+    "REFERENCE_TOKEN_LENGTH",
     "RUN_REF_RE",
     "identity_key_id",
     "identity_ref",

@@ -218,6 +218,36 @@ def test_requeued_rejection_preserves_delivery_semantics_without_payload():
     assert payload["state"] == "rejected"
     assert payload["delivery_redelivered"] is True
     assert payload["metadata"]["requeue"] is True
+
+
+def test_received_event_preserves_broker_redelivery_marker():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("default",),
+        project_key="cd_balanced",
+        ingest_url="http://ingest",
+        observer_id="obs-1",
+    )
+
+    payload = sanitize_celery_event(
+        {
+            "type": "task-received",
+            "uuid": "task-redelivered",
+            "name": "billing.tasks.charge_customer",
+            "hostname": "celery@worker-2",
+            "delivery_info": {
+                "routing_key": "default",
+                "redelivered": True,
+            },
+            "retries": 0,
+        },
+        config=config,
+        policy=policy_from_name("readable"),
+    )
+
+    assert payload is not None
+    assert payload["normalized_event_type"] == "task_received"
+    assert payload["delivery_redelivered"] is True
     rendered = json.dumps(payload, sort_keys=True)
     assert "customer-secret" not in rendered
     assert "token" not in rendered
