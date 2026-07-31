@@ -62,6 +62,8 @@ class ActiveProbeExecutor:
             "observer_id": self.config.observer_id,
             "capability": capability,
             "observed_at": observed_at.isoformat(),
+            "attempt_ref": str(request.get("attempt_ref") or ""),
+            "attempt_index": request.get("attempt_index"),
         }
         if not request_id or capability not in self.capabilities:
             return {
@@ -127,6 +129,16 @@ class ActiveProbeExecutor:
         queried = self._inspector(request).query_task(task_id) or {}
         match = _find_queried_task(queried, task_id)
         replies = self._reply_labels(queried)
+        identity_error = _matching_attempt_error(request, match)
+        if identity_error:
+            return _negative(
+                "",
+                "attempt_unverifiable",
+                complete=False,
+                expected=expected,
+                replies=replies,
+                error_type=identity_error,
+            )
         if match is not None and match[1] == "active":
             return _positive(
                 "active",
@@ -155,6 +167,16 @@ class ActiveProbeExecutor:
         queried = self._inspector(request).query_task(task_id) or {}
         match = _find_queried_task(queried, task_id)
         replies = self._reply_labels(queried)
+        identity_error = _matching_attempt_error(request, match)
+        if identity_error:
+            return _negative(
+                "",
+                "attempt_unverifiable",
+                complete=False,
+                expected=expected,
+                replies=replies,
+                error_type=identity_error,
+            )
         if match is not None and match[1] in {"reserved", "ready"}:
             return _positive(
                 "reserved",
@@ -508,7 +530,7 @@ def _expected_workers(request: dict[str, Any]) -> tuple[str, ...]:
 def _find_queried_task(
     payload: Any,
     task_id: str,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, dict[str, Any]] | None:
     if not isinstance(payload, dict):
         return None
     for worker, rows in payload.items():
@@ -519,8 +541,71 @@ def _find_queried_task(
             continue
         state = str(value[0] or "").strip().lower()
         if state:
-            return str(worker), state
+            details = value[1] if len(value) > 1 and isinstance(value[1], dict) else {}
+            return str(worker), state, details
     return None
+
+
+def _matching_attempt_error(
+    request: dict[str, Any],
+    match: tuple[str, str, dict[str, Any]] | None,
+) -> str:
+    if match is None or not str(request.get("attempt_ref") or ""):
+        return ""
+    expected_retry = _non_negative_int(request.get("application_retry_count"))
+    actual_retry = _task_retry_count(match[2])
+    expected_index = _non_negative_int(request.get("attempt_index"))
+    expected_origin = str(request.get("attempt_origin") or "")
+    if expected_retry is None:
+        return "attempt_identity_unverifiable"
+    if actual_retry is None:
+        # Stock Celery ``query_task`` does not consistently expose the request
+        # retry counter.  A positive UUID match is nevertheless sufficient for
+        # the one initial attempt that the Backend has already established as
+        # current and conflict-free.  Later application retries and broker
+        # redeliveries still require an attempt-discriminating runtime fact.
+        if not (
+            expected_retry == 0
+            and expected_index == 0
+            and expected_origin == "initial"
+        ):
+            return "attempt_identity_unverifiable"
+        return ""
+    if actual_retry != expected_retry:
+        return "attempt_identity_mismatch"
+    if expected_origin == "broker_redelivery" and not _task_redelivered(match[2]):
+        return "attempt_identity_mismatch"
+    return ""
+
+
+def _task_retry_count(details: dict[str, Any]) -> int | None:
+    request = details.get("request")
+    request = request if isinstance(request, dict) else {}
+    return _non_negative_int(details.get("retries", request.get("retries")))
+
+
+def _task_redelivered(details: dict[str, Any]) -> bool:
+    delivery = details.get("delivery_info")
+    delivery = delivery if isinstance(delivery, dict) else {}
+    request = details.get("request")
+    request = request if isinstance(request, dict) else {}
+    request_delivery = request.get("delivery_info")
+    request_delivery = request_delivery if isinstance(request_delivery, dict) else {}
+    return bool(
+        details.get("redelivered") is True
+        or delivery.get("redelivered") is True
+        or request_delivery.get("redelivered") is True
+    )
+
+
+def _non_negative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _negative_complete(

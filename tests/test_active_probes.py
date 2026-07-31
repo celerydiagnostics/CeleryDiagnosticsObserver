@@ -142,6 +142,83 @@ def test_positive_task_match_is_reliable_even_when_other_workers_do_not_reply():
     assert len(executor.app.control.calls) == 1
 
 
+def test_task_match_is_qualified_against_the_requested_attempt():
+    executor = _executor(
+        _Inspect(active={"worker-a": [{"id": "task-1", "retries": 1}]})
+    )
+    request = _request(
+        "celery.inspect.query_task",
+        attempt_ref="A-ABCDEFGHIJKLMNOPQRST",
+        attempt_index=1,
+        application_retry_count=1,
+        attempt_origin="application_retry",
+    )
+
+    result = executor.execute(request)
+
+    assert result["outcome_id"] == "active"
+    assert result["attempt_ref"] == "A-ABCDEFGHIJKLMNOPQRST"
+    assert result["attempt_index"] == 1
+
+
+def test_initial_attempt_accepts_stock_query_task_without_retry_metadata():
+    executor = _executor(
+        _Inspect(active={"worker-a": [{"id": "task-1"}]})
+    )
+
+    result = executor.execute(
+        _request(
+            "celery.inspect.query_task",
+            attempt_ref="A-ABCDEFGHIJKLMNOPQRST",
+            attempt_index=0,
+            application_retry_count=0,
+            attempt_origin="initial",
+        )
+    )
+
+    assert result["outcome_id"] == "active"
+    assert result["complete"] is True
+
+
+def test_later_attempt_rejects_stock_query_task_without_retry_metadata():
+    executor = _executor(
+        _Inspect(active={"worker-a": [{"id": "task-1"}]})
+    )
+
+    result = executor.execute(
+        _request(
+            "celery.inspect.query_task",
+            attempt_ref="A-ABCDEFGHIJKLMNOPQRST",
+            attempt_index=1,
+            application_retry_count=1,
+            attempt_origin="application_retry",
+        )
+    )
+
+    assert result["complete"] is False
+    assert result["error_type"] == "attempt_identity_unverifiable"
+
+
+def test_task_match_with_another_retry_count_is_not_accepted():
+    executor = _executor(
+        _Inspect(active={"worker-a": [{"id": "task-1", "retries": 0}]})
+    )
+
+    result = executor.execute(
+        _request(
+            "celery.inspect.query_task",
+            attempt_ref="A-ABCDEFGHIJKLMNOPQRST",
+            attempt_index=1,
+            application_retry_count=1,
+            attempt_origin="application_retry",
+        )
+    )
+
+    assert result["complete"] is False
+    assert result["error_type"] == "attempt_identity_mismatch"
+    assert "outcome_id" not in result
+
+
 def test_protected_worker_alias_uses_broadcast_and_accepts_positive_match():
     executor = _executor(
         _Inspect(active={"celery@worker-host": [{"id": "task-1"}]})
