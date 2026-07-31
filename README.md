@@ -20,12 +20,11 @@ does not install code into customer web or worker processes.
 - An optional app-aware observer when run with `-A myproject.celery:app`; this
   loads the Celery app inside the observer process to explain routing,
   visibility timeout, `task_track_started`, and beat schedule coverage.
-- A narrow optional Publisher Probe API for producer processes that need
-  publish attempt, broker-accepted, and explicit publish-failure evidence.
 
 ## What This Package Is Not
 
-- It is not a broad SDK.
+- It is not an in-process instrumentation library.
+- It does not install producer or task instrumentation.
 - It does not require changing task definitions.
 - It does not require a custom Celery `Task` base.
 - It does not collect task args, kwargs, results, raw tracebacks, frame locals,
@@ -140,46 +139,11 @@ celery-diagnostics status
 
 Use `doctor` when you need detailed telemetry coverage.
 
-## Publisher Probe
-
-Publisher Probe is optional producer-side instrumentation. It is useful when
-you need to distinguish a producer publish failure from a task that was
-accepted by the broker but never picked up by a worker.
-
-```python
-from celery_diagnostics.publisher import track_task_publishing
-
-track_task_publishing(app)
-```
-
-Configuration uses the same project key convention as the observer:
-
-```bash
-CD_PROJECT_KEY=cd_xxx
-CD_INGEST_URL=https://ingest.celerydiagnostics.com
-```
-
-For explicit publish failures in code paths where you already catch the
-exception:
-
-```python
-from celery_diagnostics.publisher import record_publish_failed
-
-try:
-    task.apply_async(task_id=task_id)
-except Exception as exc:
-    record_publish_failed(task_id=task_id, task_name=task.name, exception=exc)
-    raise
-```
-
-The probe is fail-open. Missing project key, network failure, or telemetry
-errors do not change Celery publish behavior.
-
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `CD_PROJECT_KEY` | Project key used by `observe` and Publisher Probe when sending telemetry. Required for non-dry-run `observe`; Publisher Probe disables itself when missing. |
+| `CD_PROJECT_KEY` | Project key used by `observe` when sending telemetry. Required for non-dry-run `observe`. |
 | `CELERY_BROKER_URL` | Celery broker URL. Redis is the current observer target. |
 | `CD_QUEUES` | Comma-separated queue names to sample when `--queues` is not provided. |
 | `CD_INGEST_URL` | Celery Diagnostics ingest base URL. Defaults to `http://127.0.0.1:8000`. |
@@ -243,28 +207,11 @@ Project-aware mode uses an allowlist of app configuration facts. It does not
 dump arbitrary Celery config, task payloads, broker credentials, or exception
 messages from failed app imports.
 
-Publisher Probe sends only publish lifecycle fields: task id, task name or
-hashed task label, queue/routing/exchange labels, correlation ids already in
-Celery headers, and exception type/module for explicit publish failures. It
-does not send task args, kwargs, message body, raw headers, exception messages,
-or stack frames.
-
-## Optional Progress Obligation
-
-Long-running tasks can declare a privacy-safe liveness obligation without
-reporting business progress:
-
-```python
-from celery_diagnostics import report_task_progress
-
-report_task_progress(self, sequence=4, max_silence_seconds=30)
-```
-
-The helper emits only a monotonic sequence number and the declared maximum
-silence interval. It does not send percentages, customer data, task arguments,
-results, or arbitrary progress values. Celery Diagnostics treats silence as a
-stall only after the declared interval expires and the event source is still
-fresh; otherwise the execution state remains unknown.
+The external Observer cannot directly witness an exception that prevents a
+producer from reaching the broker. In that case it reports the boundary of its
+evidence instead of inferring a publish failure from absence alone. Progress
+events are consumed when they already exist in the Celery event stream; this
+package does not add task-side progress instrumentation.
 
 ## Local Development
 
@@ -283,7 +230,7 @@ python -m pytest tests -q
 Run syntax checks:
 
 ```bash
-python -m py_compile celery_diagnostics/*.py celery_diagnostics_observer/*.py
+python -m py_compile celery_diagnostics_observer/*.py
 ```
 
 Build a wheel:
@@ -295,9 +242,6 @@ python -m build
 ## Repository Layout
 
 ```text
-celery_diagnostics/
-  publisher.py        # optional producer-side publish tracker
-  progress.py         # optional privacy-safe progress obligation
 celery_diagnostics_observer/
   active_probes.py    # bounded on-demand read-only checks
   capabilities.py     # advertised active-check capabilities
@@ -318,15 +262,14 @@ tests/
 
 ## Release Notes
 
-The package name is `celery-diagnostics`; observer code imports as
-`celery_diagnostics_observer`, and the optional publisher API imports as
-`celery_diagnostics.publisher`.
+The package name is `celery-diagnostics`; its code imports as
+`celery_diagnostics_observer`.
 
 Before release:
 
 ```bash
 python -m pytest tests -q
-python -m py_compile celery_diagnostics/*.py celery_diagnostics_observer/*.py
+python -m py_compile celery_diagnostics_observer/*.py
 python -m build
 ```
 

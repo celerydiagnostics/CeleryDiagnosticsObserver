@@ -10,7 +10,8 @@ All notable changes to the standalone Celery Diagnostics observer package are do
 - Added telemetry coverage commands: `celery-diagnostics doctor` and `celery-diagnostics status`.
 - Added startup coverage summary for real `observe` runs.
 - Added Enhanced Observer app-aware coverage through `--mode project-aware -A myproject.celery:app`.
-- Added optional Publisher Probe API at `celery_diagnostics.publisher`.
+- Removed the in-process publisher and progress helpers. The distribution now
+  contains only the standalone Observer.
 
 ## 0.1.0
 

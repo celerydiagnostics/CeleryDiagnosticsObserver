@@ -48,11 +48,10 @@ Source = "https://github.com/celery-diagnostics/celery-diagnostics"
 celery-diagnostics = "celery_diagnostics_observer.cli:main"
 
 [tool.setuptools]
-packages = ["celery_diagnostics", "celery_diagnostics_observer"]
+packages = ["celery_diagnostics_observer"]
 
 [tool.setuptools.package-data]
 celery_diagnostics_observer = ["py.typed"]
-celery_diagnostics = ["py.typed"]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py"]

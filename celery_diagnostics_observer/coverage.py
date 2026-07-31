@@ -113,7 +113,7 @@ def build_coverage_report(
         producer_publish_tracking=CoverageSource(
             "Producer publish tracking",
             "unavailable",
-            "Publisher Probe is optional producer-side instrumentation and is not confirmed by this observer.",
+            "The standalone observer does not run inside producer processes.",
         ),
         diagnostic_level=diagnostic_level,
         safe_claims=safe_claims,
@@ -222,7 +222,10 @@ def _blocked_claims(app_context: AppContextSnapshot) -> tuple[BlockedClaim, ...]
         BlockedClaim("routing_mismatch", routing_reason),
         BlockedClaim("beat_schedule_missed", beat_reason),
         BlockedClaim("visibility_timeout_runtime_risk", visibility_reason),
-        BlockedClaim("publish_failed_before_broker", "requires producer-side Publisher Probe telemetry"),
+        BlockedClaim(
+            "publish_failed_before_broker",
+            "cannot be established from external observer evidence alone",
+        ),
     )
 
 
@@ -243,7 +246,6 @@ def _next_steps(config: ObserverConfig, policy: TelemetryPolicy, app_context: Ap
     if not policy.enable_control_inspect:
         steps.append("use a telemetry policy with control inspect when worker topology is safe to collect")
     steps.append("enable Celery task events so the observer can see lifecycle transitions")
-    steps.append("enable Publisher Probe in producer processes to diagnose pre-broker publish failures")
     return tuple(steps)
 
 
