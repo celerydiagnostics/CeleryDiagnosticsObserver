@@ -42,12 +42,15 @@ TASK_EVENT_MAP = {
     # redelivery marker.  It is normalized as receipt evidence for the delivery
     # attempt that emitted it.
     "task-delivery-fact": ("task_received", "received"),
+    "beat-task-due": ("beat_task_due", "due"),
+    "beat-publish-failed": ("publish_failed", "publish_failed"),
 }
 
 WORKER_EVENT_MAP = {
     "worker-online": ("worker_ready", "online"),
     "worker-heartbeat": ("worker_heartbeat", "online"),
     "worker-offline": ("worker_shutdown", "offline"),
+    "beat-schedule-snapshot": ("beat_schedule_snapshot", "online"),
 }
 
 _EXCEPTION_TYPE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)(?:\(|:|$)")
@@ -301,13 +304,19 @@ def _sanitize_task_event(
         metadata["progress_max_silence_seconds"] = _optional_positive_int(
             raw_event.get("progress_max_silence_seconds")
         )
+    periodic_schedule_name, _schedule_name_hashed = _label(
+        raw_event.get("periodic_schedule_name") or "",
+        allowed=policy.send_task_names,
+        kind="task",
+        config=config,
+    )
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
             "observer_id": config.observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
-            "source": "celery_event_stream",
+            "source": "celery_beat_adapter" if event_type.startswith("beat-") else "celery_event_stream",
             "event_type": public_event_type,
             "normalized_event_type": normalized_type,
             "task_id": run_ref or task_id,
@@ -319,6 +328,7 @@ def _sanitize_task_event(
             "queue_is_hashed": queue_hashed,
             "routing_key": routing_key,
             "routing_key_is_hashed": routing_key_hashed,
+            "exchange": _safe_token(raw_event.get("exchange"), 255),
             "worker": worker,
             "worker_is_hashed": worker_hashed,
             "state": "expired" if expired_revoke else state,
@@ -336,6 +346,15 @@ def _sanitize_task_event(
             "runtime": _optional_float(raw_event.get("runtime")),
             "exception_type": exception_type,
             "exception_module": exception_module,
+            "is_periodic_task": bool(event_type.startswith("beat-") or raw_event.get("is_periodic_task")),
+            "periodic_schedule_name": periodic_schedule_name,
+            "periodic_schedule_id": _safe_token(raw_event.get("periodic_schedule_id"), 128),
+            "periodic_schedule_hash": _safe_token(raw_event.get("periodic_schedule_hash"), 128),
+            "periodic_schedule_version": _safe_token(raw_event.get("periodic_schedule_version"), 128),
+            "periodic_occurrence_key": _safe_token(raw_event.get("periodic_occurrence_key"), 128),
+            "periodic_scheduled_fire_at": _datetime_iso(raw_event.get("periodic_scheduled_fire_at")),
+            "periodic_task_lateness_ms": _optional_non_negative_int(raw_event.get("periodic_task_lateness_ms")),
+            "beat_hostname": _safe_token(raw_event.get("beat_hostname"), 255),
             "payload_redacted": True,
             "metadata": metadata,
         }
@@ -365,12 +384,21 @@ def _sanitize_worker_event(
             "observer_id": config.observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
-            "source": "celery_event_stream",
+            "source": "celery_beat_adapter" if event_type == "beat-schedule-snapshot" else "celery_event_stream",
             "event_type": event_type,
             "normalized_event_type": normalized_type,
             "worker": worker_label,
             "worker_is_hashed": worker_hashed,
             "state": state,
+            "hostname": worker_label,
+            "beat_schedule_version": _safe_token(raw_event.get("beat_schedule_version"), 128),
+            "beat_schedule_entry_count": _optional_non_negative_int(raw_event.get("beat_schedule_entry_count")),
+            "beat_schedule_snapshot_complete": bool(raw_event.get("beat_schedule_snapshot_complete")),
+            "beat_schedule_entries": _sanitize_beat_schedule_entries(
+                raw_event.get("beat_schedule_entries"),
+                config=config,
+                policy=policy,
+            ),
             "event_timestamp": _datetime_iso(raw_event.get("timestamp")) or observed_at,
             "observed_at": observed_at,
             "payload_redacted": True,
@@ -380,6 +408,64 @@ def _sanitize_worker_event(
             },
         }
     )
+
+
+def _sanitize_beat_schedule_entries(
+    value: Any,
+    *,
+    config: ObserverConfig,
+    policy: TelemetryPolicy,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return entries
+    for raw in value[:200]:
+        if not isinstance(raw, dict):
+            continue
+        schedule_name, _schedule_name_hashed = _label(
+            raw.get("schedule_name") or "",
+            allowed=policy.send_task_names,
+            kind="task",
+            config=config,
+        )
+        task_name, _task_name_hashed = _label(
+            raw.get("task_name") or "",
+            allowed=policy.send_task_names,
+            kind="task",
+            config=config,
+        )
+        queue, _queue_hashed = _label(
+            raw.get("queue") or "",
+            allowed=policy.send_queue_names,
+            kind="queue",
+            config=config,
+        )
+        routing_key, _routing_hashed = _label(
+            raw.get("routing_key") or "",
+            allowed=policy.send_routing_labels,
+            kind="route",
+            config=config,
+        )
+        entries.append(
+            {
+                "schedule_id": _safe_token(raw.get("schedule_id"), 128),
+                "schedule_name": schedule_name,
+                "task_name": task_name,
+                "schedule_type": _safe_token(raw.get("schedule_type"), 64),
+                "schedule_display": _safe_token(raw.get("schedule_display"), 255),
+                "schedule_hash": _safe_token(raw.get("schedule_hash"), 128),
+                "schedule_version": _safe_token(raw.get("schedule_version"), 128),
+                "enabled": bool(raw.get("enabled", True)),
+                "queue": queue,
+                "routing_key": routing_key,
+                "exchange": _safe_token(raw.get("exchange"), 255),
+                "next_due_at": _datetime_iso(raw.get("next_due_at")) or "",
+                "last_run_at": _datetime_iso(raw.get("last_run_at")) or "",
+                "total_run_count": _optional_non_negative_int(raw.get("total_run_count")),
+                "interval_seconds": _optional_non_negative_int(raw.get("interval_seconds")),
+            }
+        )
+    return entries
 
 
 def _label(value: Any, *, allowed: bool, kind: str, config: ObserverConfig) -> tuple[str, bool]:

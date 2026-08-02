@@ -4,7 +4,9 @@ Standalone observer-first integration for Celery Diagnostics.
 
 The observer runs beside a Celery system. It connects to broker/event sources,
 samples safe telemetry, and sends sanitized evidence to Celery Diagnostics. It
-does not install code into customer web or worker processes.
+does not install code into customer web or worker processes. An optional
+scheduler adapter runs only inside Celery Beat when periodic-fire diagnosis is
+required.
 
 ## What This Package Is
 
@@ -20,10 +22,12 @@ does not install code into customer web or worker processes.
 - An optional app-aware observer when run with `-A myproject.celery:app`; this
   loads the Celery app inside the observer process to explain routing,
   visibility timeout, `task_track_started`, and beat schedule coverage.
+- An optional Celery Beat scheduler adapter that reports bounded schedule
+  inventory, due decisions, and publish failures without task payloads.
 
 ## What This Package Is Not
 
-- It is not an in-process instrumentation library.
+- It is not producer, web-process, or worker instrumentation.
 - It does not install producer or task instrumentation.
 - It does not require changing task definitions.
 - It does not require a custom Celery `Task` base.
@@ -110,6 +114,28 @@ alone, so the Observer does not fetch the task's result value. Other result
 backends and serializers remain unsupported rather than silently loading a
 private result record through `AsyncResult.state`.
 
+### Periodic schedules (optional Celery Beat adapter)
+
+The standalone Observer can follow a periodic task after publication, but it
+cannot know that Celery Beat should have fired an entry and did not. Run Beat
+with the package's scheduler wrapper when that distinction matters:
+
+```bash
+CD_PROJECT_KEY=cd_xxx \
+CD_INGEST_URL=https://ingest.celerydiagnostics.com \
+celery -A myproject.celery:app beat \
+  --scheduler celery_diagnostics_observer.beat:ObserverPersistentScheduler
+```
+
+This remains Celery's `PersistentScheduler`; the wrapper adds sanitized
+schedule snapshots and evidence for due and failed publish attempts. It does
+not collect task args, kwargs, result values, broker URLs, or credentials.
+Schedules above the snapshot cap are reported as an incomplete inventory, so
+the Backend will not infer that omitted entries were deleted.
+
+Without the adapter, ordinary task diagnosis continues to work and the
+`Periodic schedules` page explicitly reports that Beat evidence is unavailable.
+
 ### `doctor`
 
 Explain what Celery Diagnostics can and cannot currently know:
@@ -159,6 +185,9 @@ Use `doctor` when you need detailed telemetry coverage.
 | `CD_LOG_LEVEL` | Python logging level. |
 | `CD_ACTIVE_PROBES` | Enable bounded read-only diagnostic checks. Defaults to `1`. |
 | `CD_BROKER_MESSAGE_SCAN_LIMIT` | Maximum Redis messages inspected by one task-presence check. Defaults to `10000`, bounded to `100000`. |
+| `CD_BEAT_OBSERVER_ID` | Optional stable source label for the Beat adapter. Defaults to `beat@<hostname>`. |
+| `CD_BEAT_SNAPSHOT_INTERVAL` | Beat schedule snapshot interval in seconds. Defaults to `30`, bounded to `5..3600`. |
+| `CD_BEAT_SPOOL_PATH` | Optional sanitized JSONL spool used only by the Beat adapter. |
 
 Every CLI option other than the project key can also be passed as an argument.
 For example:
@@ -213,6 +242,9 @@ evidence instead of inferring a publish failure from absence alone. Progress
 events are consumed when they already exist in the Celery event stream; this
 package does not add task-side progress instrumentation.
 
+The optional Beat adapter observes only the Beat-to-broker publication
+boundary. It does not broaden access to task payloads or application data.
+
 ## Local Development
 
 Install editable dependencies:
@@ -246,6 +278,7 @@ celery_diagnostics_observer/
   active_probes.py    # bounded on-demand read-only checks
   capabilities.py     # advertised active-check capabilities
   app_context.py      # allowlisted app-aware config extraction
+  beat.py             # optional privacy-safe Celery Beat scheduler adapter
   cli.py              # celery-diagnostics command implementation
   config.py           # env and CLI config normalization
   coverage.py         # doctor/status/startup coverage model

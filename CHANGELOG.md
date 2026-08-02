@@ -11,7 +11,11 @@ All notable changes to the standalone Celery Diagnostics observer package are do
 - Added startup coverage summary for real `observe` runs.
 - Added Enhanced Observer app-aware coverage through `--mode project-aware -A myproject.celery:app`.
 - Removed the in-process publisher and progress helpers. The distribution now
-  contains only the standalone Observer.
+  contains the standalone Observer and the optional Beat scheduler adapter,
+  with no producer or worker SDK.
+- Added an optional Celery Beat scheduler adapter for privacy-safe schedule
+  inventory, due decisions, and publish-failure evidence. It does not restore
+  producer or worker instrumentation.
 
 ## 0.1.0
 
