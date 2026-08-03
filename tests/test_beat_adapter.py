@@ -4,10 +4,11 @@ import json
 from datetime import datetime, timezone
 
 from celery import Celery
-from celery.beat import ScheduleEntry
+from celery.beat import PersistentScheduler, ScheduleEntry
 from celery.schedules import schedule
 
 from celery_diagnostics_observer.beat import (
+    ObserverPersistentScheduler,
     _first_due_entry,
     _is_broker_error,
     _prepare_entry,
@@ -120,3 +121,31 @@ def test_due_entry_and_broker_error_helpers_cover_pre_publish_failure():
     assert _first_due_entry({entry.name: entry}) is entry
     assert _is_broker_error(ConnectionRefusedError("broker unavailable")) is True
     assert _is_broker_error(ValueError("invalid schedule")) is False
+
+
+def test_broker_failure_evidence_is_flushed_before_beat_can_exit():
+    class RecordingTransport:
+        def __init__(self):
+            self.force_values = []
+
+        def flush_once(self, *, force=False):
+            self.force_values.append(force)
+
+    scheduler = object.__new__(ObserverPersistentScheduler)
+    scheduler._cd_transport = RecordingTransport()
+
+    scheduler._cd_flush_failure_evidence()
+
+    assert scheduler._cd_transport.force_values == [True]
+
+
+def test_reserve_remembers_the_exact_entry_for_pre_publish_failure(monkeypatch):
+    entry = _entry()
+    scheduler = object.__new__(ObserverPersistentScheduler)
+    scheduler._cd_current_due_entry = None
+    monkeypatch.setattr(PersistentScheduler, "reserve", lambda _self, _entry: "advanced-entry")
+
+    result = scheduler.reserve(entry)
+
+    assert result == "advanced-entry"
+    assert scheduler._cd_current_due_entry is entry

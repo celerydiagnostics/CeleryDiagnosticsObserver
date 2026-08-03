@@ -57,6 +57,7 @@ class ObserverPersistentScheduler(PersistentScheduler):
 
     def tick(self, *args, **kwargs):
         self._cd_emit_schedule_snapshot()
+        self._cd_current_due_entry = None
         due_entry = _first_due_entry(getattr(self, "schedule", None))
         try:
             return super().tick(*args, **kwargs)
@@ -64,6 +65,11 @@ class ObserverPersistentScheduler(PersistentScheduler):
             # Celery resolves ``self.producer`` before calling ``apply_async``.
             # A broker connection failure at that point would otherwise bypass
             # the adapter's task-level evidence entirely.
+            # Celery reserves the due entry before it resolves ``producer``.
+            # Its heap drift can make our pre-tick is_due check disagree by a
+            # few milliseconds, so prefer the exact entry remembered by
+            # ``reserve`` when producer creation fails.
+            due_entry = self._cd_current_due_entry or due_entry
             if self._cd_enabled and due_entry is not None and _is_broker_error(exc):
                 prepared_entry, context = _prepare_entry(
                     due_entry,
@@ -88,7 +94,15 @@ class ObserverPersistentScheduler(PersistentScheduler):
                         exception=exc,
                     )
                 )
+                # Beat may terminate immediately after a broker connection
+                # failure.  Do not depend on the background flush loop or an
+                # atexit handler to preserve the only direct failure evidence.
+                self._cd_flush_failure_evidence()
             raise
+
+    def reserve(self, entry):
+        self._cd_current_due_entry = entry
+        return super().reserve(entry)
 
     def apply_async(self, entry, producer=None, advance=True, **kwargs):
         if not self._cd_enabled:
@@ -115,6 +129,7 @@ class ObserverPersistentScheduler(PersistentScheduler):
                 exception=exc,
             )
             self._cd_enqueue(failed_payload)
+            self._cd_flush_failure_evidence()
             raise
 
         actual_task_id = str(getattr(result, "id", "") or "")
@@ -168,6 +183,18 @@ class ObserverPersistentScheduler(PersistentScheduler):
     def _cd_enqueue(self, payload: dict[str, Any] | None) -> None:
         if payload is not None and self._cd_transport is not None:
             self._cd_transport.enqueue(payload)
+
+    def _cd_flush_failure_evidence(self) -> None:
+        transport = self._cd_transport
+        if transport is None:
+            return
+        try:
+            transport.flush_once(force=True)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not interrupt Beat.
+            logger.warning(
+                "Beat failure evidence flush failed error=%s",
+                type(exc).__name__,
+            )
 
     def _cd_shutdown(self) -> None:
         loop = getattr(self, "_cd_flush_loop", None)
