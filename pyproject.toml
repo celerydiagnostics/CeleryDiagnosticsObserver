@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "celery-diagnostics"
 version = "0.2.0"
-description = "Standalone Celery Diagnostics observer."
+description = "Diagnose missing, stuck, retried, and duplicated Celery tasks with a privacy-safe standalone observer."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "LicenseRef-Proprietary"
