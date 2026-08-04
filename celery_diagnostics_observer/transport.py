@@ -27,6 +27,7 @@ class _RetryState:
 
 class ObserverTransport:
     def __init__(self, config: ObserverConfig):
+        config.validate_ingest_transport()
         self.config = config
         self.buffer: deque[dict[str, Any]] = deque()
         self.spool = JsonlSpool(config.spool_path) if config.spool_path else None

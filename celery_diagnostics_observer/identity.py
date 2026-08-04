@@ -20,6 +20,8 @@ _PREFIXES = {
     "route": "K",
     "worker": "W",
     "run": "R",
+    "observer": "O",
+    "exchange": "X",
 }
 
 

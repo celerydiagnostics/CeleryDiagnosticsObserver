@@ -6,7 +6,11 @@ from celery_diagnostics_observer.config import ObserverConfig
 from celery_diagnostics_observer.identity import open_identity
 from celery_diagnostics_observer.policy import policy_from_name
 from celery_diagnostics_observer.redis_sampler import RedisQueueSampler
-from celery_diagnostics_observer.sanitizer import sanitize_celery_event, sanitize_queue_snapshot
+from celery_diagnostics_observer.sanitizer import (
+    redact_url_credentials,
+    sanitize_celery_event,
+    sanitize_queue_snapshot,
+)
 
 
 def test_local_only_policy_references_identifiers_and_strips_forbidden_fields():
@@ -16,6 +20,7 @@ def test_local_only_policy_references_identifiers_and_strips_forbidden_fields():
         project_key="cd_secret",
         ingest_url="http://ingest",
         observer_id="obs-1",
+        telemetry_policy="local-only",
         identity_key="customer-owned-identity-key",
     )
     policy = policy_from_name("local-only")
@@ -47,6 +52,7 @@ def test_local_only_policy_references_identifiers_and_strips_forbidden_fields():
     assert payload["queue_is_hashed"] is True
     assert payload["worker"].startswith("W-")
     assert payload["worker_is_hashed"] is True
+    assert payload["observer_id"].startswith("O-")
     assert payload["exception_type"] == "CardDeclined"
     assert payload["exception_module"] is None
     assert "project_key" not in payload
@@ -65,6 +71,45 @@ def test_local_only_policy_references_identifiers_and_strips_forbidden_fields():
     assert "customer-secret" not in rendered
     assert "token" not in rendered
     assert "4242" not in rendered
+
+
+def test_local_only_hides_exchange_and_beat_operational_labels():
+    config = ObserverConfig(
+        broker_url="redis://redis:6379/0",
+        queues=("private-queue",),
+        project_key="cd_secret",
+        ingest_url="https://ingest.example",
+        observer_id="private-host-observer",
+        telemetry_policy="local-only",
+        identity_key="customer-owned-identity-key",
+    )
+    payload = sanitize_celery_event(
+        {
+            "type": "beat-task-due",
+            "uuid": "task-1",
+            "name": "private.task",
+            "exchange": "customer-secret-exchange",
+            "beat_hostname": "beat@customer-host",
+        },
+        config=config,
+        policy=policy_from_name("local-only"),
+    )
+
+    assert payload is not None
+    assert payload["observer_id"].startswith("O-")
+    assert payload["exchange"].startswith("X-")
+    assert payload["beat_hostname"].startswith("W-")
+    assert "customer" not in json.dumps(payload)
+
+
+def test_url_redaction_removes_userinfo_and_secret_query_values():
+    value = "https://user:password@example.com/path?project_key=secret&view=summary#section"
+
+    redacted = redact_url_credentials(value)
+
+    assert redacted == "https://example.com/path?project_key=%5Bredacted%5D&view=summary#section"
+    assert "password" not in redacted
+    assert "secret" not in redacted
 
 
 def test_readable_policy_sends_operational_identifiers():

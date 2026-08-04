@@ -1,0 +1,73 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          expected = os.environ["RELEASE_TAG"].removeprefix("v")
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          package = re.search(
+              r'^__version__\s*=\s*["\']([^"\']+)["\']',
+              pathlib.Path("celery_diagnostics_observer/version.py").read_text(),
+              re.MULTILINE,
+          ).group(1)
+          declared = project["project"]["version"]
+          if not expected or expected != declared or declared != package:
+              raise SystemExit(
+                  f"release tag={expected!r}, pyproject={declared!r}, package={package!r}"
+              )
+          PY
+
+      - name: Test and build distributions
+        run: |
+          python -m pip install --upgrade ".[dev]"
+          python -m pytest tests -q
+          python -m ruff check celery_diagnostics_observer tests
+          python -m py_compile celery_diagnostics_observer/*.py
+          python -m build
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/celery-diagnostics/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

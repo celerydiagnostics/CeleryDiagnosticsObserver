@@ -5,7 +5,7 @@ import platform
 import re
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .config import ObserverConfig
 from .identity import identity_ref, seal_identity, task_run_ref
@@ -59,6 +59,10 @@ _KNOWN_INNER_EXCEPTION_RE = re.compile(
     r"(?:SoftTimeLimitExceeded|TimeLimitExceeded|WorkerLostError))(?:\(|:|$)"
 )
 _WRAPPER_EXCEPTION_TYPES = {"ExceptionWithTraceback"}
+_SECRET_QUERY_KEYS = {
+    "access_token", "api_key", "apikey", "auth", "key", "password",
+    "project_key", "secret", "token",
+}
 
 
 def sanitize_celery_event(raw_event: dict[str, Any], *, config: ObserverConfig, policy: TelemetryPolicy) -> dict[str, Any] | None:
@@ -86,7 +90,7 @@ def sanitize_queue_snapshot(
     label, is_hashed = _label(queue, allowed=policy.send_queue_names, kind="queue", config=config)
     return {
         "schema_version": SCHEMA_VERSION,
-        "observer_id": config.observer_id,
+        "observer_id": config.public_observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
         "source": "redis_queue_sampler",
@@ -126,7 +130,7 @@ def sanitize_worker_snapshot(
             queues.append(queue_label)
     return {
         "schema_version": SCHEMA_VERSION,
-        "observer_id": config.observer_id,
+        "observer_id": config.public_observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
         "source": "celery_control_inspect",
@@ -176,7 +180,7 @@ def sanitize_observer_heartbeat(
                 details[key] = getattr(transport, key)
     return {
         "schema_version": SCHEMA_VERSION,
-        "observer_id": config.observer_id,
+        "observer_id": config.public_observer_id,
         "observer_mode": config.mode,
         "telemetry_policy": policy.name,
         "source": "observer",
@@ -195,12 +199,18 @@ def redact_url_credentials(value: str) -> str:
         parsed = urlsplit(value)
     except ValueError:
         return "[invalid-url]"
-    if not parsed.username and not parsed.password:
-        return value
     host = parsed.hostname or ""
+    if parsed.username:
+        host = host or "[redacted-host]"
     if parsed.port:
         host = f"{host}:{parsed.port}"
-    return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+    query = urlencode(
+        [
+            (key, "[redacted]" if key.lower() in _SECRET_QUERY_KEYS else item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+    )
+    return urlunsplit((parsed.scheme, host, parsed.path, query, parsed.fragment))
 
 
 def stable_hash(value: Any, *, salt: str = "") -> str:
@@ -313,7 +323,7 @@ def _sanitize_task_event(
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
-            "observer_id": config.observer_id,
+            "observer_id": config.public_observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
             "source": "celery_beat_adapter" if event_type.startswith("beat-") else "celery_event_stream",
@@ -328,7 +338,12 @@ def _sanitize_task_event(
             "queue_is_hashed": queue_hashed,
             "routing_key": routing_key,
             "routing_key_is_hashed": routing_key_hashed,
-            "exchange": _safe_token(raw_event.get("exchange"), 255),
+            "exchange": _label(
+                raw_event.get("exchange"),
+                allowed=policy.send_routing_labels,
+                kind="exchange",
+                config=config,
+            )[0],
             "worker": worker,
             "worker_is_hashed": worker_hashed,
             "state": "expired" if expired_revoke else state,
@@ -354,7 +369,12 @@ def _sanitize_task_event(
             "periodic_occurrence_key": _safe_token(raw_event.get("periodic_occurrence_key"), 128),
             "periodic_scheduled_fire_at": _datetime_iso(raw_event.get("periodic_scheduled_fire_at")),
             "periodic_task_lateness_ms": _optional_non_negative_int(raw_event.get("periodic_task_lateness_ms")),
-            "beat_hostname": _safe_token(raw_event.get("beat_hostname"), 255),
+            "beat_hostname": _label(
+                raw_event.get("beat_hostname"),
+                allowed=policy.send_worker_names,
+                kind="worker",
+                config=config,
+            )[0],
             "payload_redacted": True,
             "metadata": metadata,
         }
@@ -381,7 +401,7 @@ def _sanitize_worker_event(
     return _strip_forbidden(
         {
             "schema_version": SCHEMA_VERSION,
-            "observer_id": config.observer_id,
+            "observer_id": config.public_observer_id,
             "observer_mode": config.mode,
             "telemetry_policy": policy.name,
             "source": "celery_beat_adapter" if event_type == "beat-schedule-snapshot" else "celery_event_stream",
@@ -452,13 +472,22 @@ def _sanitize_beat_schedule_entries(
                 "schedule_name": schedule_name,
                 "task_name": task_name,
                 "schedule_type": _safe_token(raw.get("schedule_type"), 64),
-                "schedule_display": _safe_token(raw.get("schedule_display"), 255),
+                "schedule_display": (
+                    _safe_token(raw.get("schedule_display"), 255)
+                    if not policy.identities_local_only
+                    else ""
+                ),
                 "schedule_hash": _safe_token(raw.get("schedule_hash"), 128),
                 "schedule_version": _safe_token(raw.get("schedule_version"), 128),
                 "enabled": bool(raw.get("enabled", True)),
                 "queue": queue,
                 "routing_key": routing_key,
-                "exchange": _safe_token(raw.get("exchange"), 255),
+                "exchange": _label(
+                    raw.get("exchange"),
+                    allowed=policy.send_routing_labels,
+                    kind="exchange",
+                    config=config,
+                )[0],
                 "next_due_at": _datetime_iso(raw.get("next_due_at")) or "",
                 "last_run_at": _datetime_iso(raw.get("last_run_at")) or "",
                 "total_run_count": _optional_non_negative_int(raw.get("total_run_count")),

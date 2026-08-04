@@ -1,5 +1,7 @@
 include README.md
 include LICENSE
+include CHANGELOG.md
+include SECURITY.md
 include pyproject.toml
 recursive-include celery_diagnostics_observer py.typed
 recursive-exclude * __pycache__

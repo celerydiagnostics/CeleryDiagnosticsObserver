@@ -128,3 +128,4 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)

@@ -31,14 +31,14 @@ required.
 - It does not install producer or task instrumentation.
 - It does not require changing task definitions.
 - It does not require a custom Celery `Task` base.
-- It does not collect task args, kwargs, results, raw tracebacks, frame locals,
-  or task payloads by default.
+- It never transmits or persists task args, kwargs, results, raw tracebacks,
+  frame locals, or task message bodies.
 - It must not claim worker topology or zero consumers from Redis queue depth
   alone.
 
 ## Install
 
-Released package:
+After the first public release:
 
 ```bash
 python -m pip install --upgrade celery-diagnostics
@@ -103,8 +103,10 @@ celery-diagnostics observe --no-active-probes
 ```
 
 For Redis message-presence checks, the observer scans only configured queues,
-uses the default Kombu priority layout, applies a bounded scan limit, and reads
-only the protocol-v2 task id header. A missing task is reported only when all
+uses the default Kombu priority layout, and applies a bounded scan limit. It
+parses message envelopes locally only to match the protocol-v2 task ID; message
+bodies are immediately discarded and are never transmitted or persisted. A
+missing task is reported only when all
 scanned lists were stable and decodable; partial or malformed observations
 remain inconclusive.
 
@@ -227,6 +229,8 @@ Default behavior:
 - project keys appear only in the Authorization header and are never written to
   event bodies or the local spool;
 - broker and ingest URL credentials are redacted in CLI reports.
+- non-loopback ingest endpoints must use HTTPS;
+- local spool and replay files are written for the owner only (`0600`).
 
 Redis queue sampling uses safe queue depth checks. Redis-only evidence can show
 queue pressure and backlog symptoms, but it cannot prove that no worker is
@@ -298,12 +302,22 @@ tests/
 The package name is `celery-diagnostics`; its code imports as
 `celery_diagnostics_observer`.
 
-Before release:
+Releases are built in GitHub Actions and published to PyPI with Trusted
+Publishing. No long-lived PyPI API token is stored in GitHub.
+
+Before creating a GitHub release, update `pyproject.toml`, `version.py`, and
+`CHANGELOG.md` to the same version, then run:
 
 ```bash
 python -m pytest tests -q
 python -m py_compile celery_diagnostics_observer/*.py
 python -m build
+python -m twine check dist/*
 ```
+
+Publish by creating a GitHub release tagged `vX.Y.Z`. The protected `pypi`
+environment must approve the publish job. For the first release, configure a
+pending PyPI Trusted Publisher for repository `Aroxed/CeleryDiagnosticsObserver`,
+workflow `release.yml`, environment `pypi`, and project `celery-diagnostics`.
 
 See `CHANGELOG.md` for version notes.

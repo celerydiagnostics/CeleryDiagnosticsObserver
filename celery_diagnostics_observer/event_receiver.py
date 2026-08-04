@@ -55,10 +55,9 @@ class EventReceiver:
             except Exception as exc:  # noqa: BLE001
                 context = connection_failure_context(self.config, exc)
                 logger.warning(
-                    "event receiver connection failed broker=%s error=%s detail=%s retry_in=%.1fs",
+                    "event receiver connection failed broker=%s error=%s retry_in=%.1fs",
                     context["broker_url"],
                     context["error_type"],
-                    context["error_detail"],
                     backoff,
                 )
                 self.stop_event.wait(backoff)
@@ -67,13 +66,10 @@ class EventReceiver:
 
 def connection_failure_context(config: ObserverConfig, exc: Exception) -> dict[str, str]:
     safe_broker_url = redact_url_credentials(config.broker_url)
-    detail = str(exc) or type(exc).__name__
-    if config.broker_url:
-        detail = detail.replace(config.broker_url, safe_broker_url)
     return {
         "broker_url": safe_broker_url,
         "error_type": type(exc).__name__,
-        "error_detail": detail[:500],
+        "error_detail": "",
     }
 
 

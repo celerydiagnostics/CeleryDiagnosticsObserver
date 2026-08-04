@@ -59,7 +59,7 @@ class ActiveProbeExecutor:
         capability = str(request.get("capability") or "")
         base = {
             "request_id": request_id,
-            "observer_id": self.config.observer_id,
+            "observer_id": self.config.public_observer_id,
             "capability": capability,
             "observed_at": observed_at.isoformat(),
             "attempt_ref": str(request.get("attempt_ref") or ""),
@@ -480,7 +480,7 @@ class ActiveProbeLoop:
         }
         response = self.session.get(
             self.config.probe_next_url,
-            params={"observer_id": self.config.observer_id},
+            params={"observer_id": self.config.public_observer_id},
             headers=headers,
             timeout=5.0,
         )

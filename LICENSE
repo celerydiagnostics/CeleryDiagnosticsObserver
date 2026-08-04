@@ -1,7 +1,15 @@
-Proprietary License
+Celery Diagnostics Observer Proprietary License
 
 Copyright (c) Celery Diagnostics.
 
-All rights reserved. This package and its source code may not be copied,
-modified, distributed, sublicensed, or used except under a separate written
-agreement with Celery Diagnostics.
+This software is licensed, not sold. You may download, install, and use an
+unmodified copy only with the Celery Diagnostics service and subject to the
+Celery Diagnostics Terms of Service at:
+https://app.celerydiagnostics.com/dashboard/help/terms/
+
+You may not copy (except for installation and backup), modify, redistribute,
+sublicense, sell, reverse engineer, or use this software to provide a competing
+service unless Celery Diagnostics gives you separate written permission.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, TO THE MAXIMUM EXTENT PERMITTED BY LAW.

@@ -16,6 +16,12 @@ All notable changes to the standalone Celery Diagnostics observer package are do
 - Added an optional Celery Beat scheduler adapter for privacy-safe schedule
   inventory, due decisions, and publish-failure evidence. It does not restore
   producer or worker instrumentation.
+- Hardened `local-only` so observer, Beat host, exchange, and schedule-display
+  identifiers no longer leak readable operational labels.
+- Require HTTPS for remote ingest, redact secret URL query values, remove raw
+  exception details from logs, and create local spool/replay files as `0600`.
+- Added tested PyPI distributions and tokenless Trusted Publishing through a
+  protected GitHub `pypi` environment.
 
 ## 0.1.0
 

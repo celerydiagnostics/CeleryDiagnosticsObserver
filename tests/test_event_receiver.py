@@ -107,7 +107,7 @@ class _FakeConsumerApp(_FakeApp):
         self.events = _FakeConsumerEvents()
 
 
-def test_connection_failure_context_redacts_broker_credentials_and_keeps_cause():
+def test_connection_failure_context_redacts_broker_credentials_and_drops_cause_detail():
     config = ObserverConfig(
         broker_url="redis://:secret@redis:6379/0",
         queues=("default",),
@@ -121,7 +121,7 @@ def test_connection_failure_context_redacts_broker_credentials_and_keeps_cause()
 
     assert context["broker_url"] == "redis://redis:6379/0"
     assert context["error_type"] == "RuntimeError"
-    assert "Name or service not known" in context["error_detail"]
+    assert context["error_detail"] == ""
     assert "secret" not in context["error_detail"]
 
 

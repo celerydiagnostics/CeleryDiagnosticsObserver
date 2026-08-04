@@ -5,6 +5,7 @@ import socket
 import uuid
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from .policy import DEFAULT_POLICY, normalize_policy_name
 
@@ -87,6 +88,23 @@ class ObserverConfig:
     @property
     def broker_type(self) -> str:
         return self.broker_url.split(":", 1)[0].lower() if ":" in self.broker_url else ""
+
+    @property
+    def public_observer_id(self) -> str:
+        if self.telemetry_policy != "local-only":
+            return self.observer_id[:255]
+        from .identity import identity_ref
+
+        return identity_ref("observer", self.observer_id, identity_key=self.identity_key)
+
+    def validate_ingest_transport(self) -> None:
+        parsed = urlsplit(self.ingest_url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}:
+            return
+        raise ValueError("CD_INGEST_URL must use HTTPS (plain HTTP is allowed only for loopback development)")
 
 
 def config_from_env(overrides: dict[str, Any] | None = None) -> ObserverConfig:

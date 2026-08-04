@@ -175,9 +175,8 @@ class ObserverPersistentScheduler(PersistentScheduler):
             self._cd_last_snapshot_at = now
         except Exception as exc:  # noqa: BLE001 - diagnostics must not interrupt Beat.
             logger.warning(
-                "Beat schedule snapshot failed error=%s detail=%s",
+                "Beat schedule snapshot failed error=%s",
                 type(exc).__name__,
-                str(exc)[:240],
             )
 
     def _cd_enqueue(self, payload: dict[str, Any] | None) -> None:
