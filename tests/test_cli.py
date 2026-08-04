@@ -10,6 +10,7 @@ import pytest
 from celery_diagnostics_observer.cli import main
 from celery_diagnostics_observer.config import config_from_env
 from celery_diagnostics_observer.identity import seal_identity, task_run_ref
+from celery_diagnostics_observer.version import __version__
 
 
 def test_dry_run_reads_project_key_from_env(monkeypatch, capsys):
@@ -87,6 +88,14 @@ def test_help_supports_observe_doctor_and_status(capsys):
     assert "doctor" in output
     assert "status" in output
     assert "resolve" in output
+
+
+def test_version_reports_package_version(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_resolve_decrypts_identity_only_in_observer_process(monkeypatch, capsys):

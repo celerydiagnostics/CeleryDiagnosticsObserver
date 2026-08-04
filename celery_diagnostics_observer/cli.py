@@ -24,6 +24,7 @@ from .redis_sampler import RedisQueueSampler, RedisSamplerLoop
 from .replay import export_event_replay
 from .sanitizer import sanitize_observer_heartbeat
 from .transport import ObserverTransport
+from .version import __version__
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,6 +240,7 @@ def _config_from_args(args: argparse.Namespace):
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="celery-diagnostics")
+    parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command")
     observe_parser = subparsers.add_parser("observe", help="Run the standalone Celery Diagnostics observer.")
     _add_common_config_args(observe_parser)
