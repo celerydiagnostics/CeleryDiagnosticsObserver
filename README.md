@@ -317,7 +317,7 @@ python -m twine check dist/*
 
 Publish by creating a GitHub release tagged `vX.Y.Z`. The protected `pypi`
 environment must approve the publish job. For the first release, configure a
-pending PyPI Trusted Publisher for repository `Aroxed/CeleryDiagnosticsObserver`,
+pending PyPI Trusted Publisher for repository `celerydiagnostics/CeleryDiagnosticsObserver`,
 workflow `release.yml`, environment `pypi`, and project `celery-diagnostics`.
 
 See `CHANGELOG.md` for version notes.

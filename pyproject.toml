@@ -42,8 +42,8 @@ dev = [
 [project.urls]
 Homepage = "https://celerydiagnostics.com/"
 Documentation = "https://celery-diagnostics.readthedocs.io/"
-Issues = "https://github.com/Aroxed/CeleryDiagnosticsObserver/issues"
-Source = "https://github.com/Aroxed/CeleryDiagnosticsObserver"
+Issues = "https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/issues"
+Source = "https://github.com/celerydiagnostics/CeleryDiagnosticsObserver"
 Privacy = "https://app.celerydiagnostics.com/dashboard/help/privacy/"
 Terms = "https://app.celerydiagnostics.com/dashboard/help/terms/"
 
