@@ -99,12 +99,34 @@ credential; it is never added to event bodies or the local spool.
 
 ### 2. Enable Celery events
 
-Configure the Celery app and restart the workers:
+Add these settings to the configuration used by your Celery app, then restart
+the workers. For a standard `celeryconfig.py` or another config object that uses
+Celery's lowercase setting names:
 
 ```python
 worker_send_task_events = True
 task_send_sent_event = True
 task_track_started = True
+```
+
+If you configure the app directly in Python:
+
+```python
+app.conf.update(
+    worker_send_task_events=True,
+    task_send_sent_event=True,
+    task_track_started=True,
+)
+```
+
+For Django projects that load settings with
+`app.config_from_object("django.conf:settings", namespace="CELERY")`, add these
+to `settings.py`:
+
+```python
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+CELERY_TASK_TRACK_STARTED = True
 ```
 
 Without task events, Redis queue sampling can still provide limited backlog
