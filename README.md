@@ -1,5 +1,9 @@
 # Celery Diagnostics Observer
 
+[![Observer CI](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/actions/workflows/ci.yml/badge.svg)](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/celery-diagnostics.svg)](https://pypi.org/project/celery-diagnostics/)
+[![Python versions](https://img.shields.io/pypi/pyversions/celery-diagnostics.svg)](https://pypi.org/project/celery-diagnostics/)
+
 The official data-collection component for the
 [Celery Diagnostics](https://celerydiagnostics.com/) backend.
 
@@ -13,10 +17,10 @@ the web dashboard.
 Celery workers + Redis broker -> Observer -> Celery Diagnostics backend -> dashboard
 ```
 
-The Observer is useful only as one part of that system: it collects evidence;
-the backend turns the evidence into task timelines and diagnoses. It does not
-install code into customer web or worker processes. An optional scheduler
-adapter runs only inside Celery Beat when periodic-fire diagnosis is required.
+The Observer collects evidence; the backend turns that evidence into task
+timelines and diagnoses. No diagnostics code runs in customer web or worker
+processes. An optional scheduler adapter runs inside Celery Beat only when
+periodic-fire diagnosis is required.
 
 ## Before You Start
 
@@ -32,44 +36,37 @@ You need:
 Redis is the currently supported broker for queue-depth sampling and bounded
 message-presence checks.
 
-## What This Package Is
+## Capabilities
 
 - A CLI package that provides `celery-diagnostics`.
 - The primary customer integration path for Celery Diagnostics.
-- A passive observer for Redis broker queue depth, Celery task/worker events,
-  optional Celery control inspect snapshots, observer health, transport retry,
-  and local sanitized spool.
+- A separate observer process for Redis broker queue depth, Celery task and
+  worker events, Celery control inspect snapshots, Observer health, transport
+  retry, and an optional sanitized local spool.
 - An executor for bounded, read-only diagnostic checks requested by Celery
   Diagnostics. Checks cover task presence, reservation, scheduling, worker
   capacity and presence, queue consumers, status-only JSON result records in
   Redis, and task-specific presence in configured Redis queues.
-- An optional app-aware observer when run with `-A myproject.celery:app`; this
+- An optional project-aware mode when run with `-A myproject.celery:app`; this
   loads the Celery app inside the observer process to explain routing,
   visibility timeout, `task_track_started`, and beat schedule coverage.
 - An optional Celery Beat scheduler adapter that reports bounded schedule
   inventory, due decisions, and publish failures without task payloads.
 
-## What This Package Is Not
+## Boundaries
 
-- It is not producer, web-process, or worker instrumentation.
-- It does not install producer or task instrumentation.
-- It does not require changing task definitions.
-- It does not require a custom Celery `Task` base.
-- It never transmits or persists task args, kwargs, results, raw tracebacks,
-  frame locals, or task message bodies.
-- It must not claim worker topology or zero consumers from Redis queue depth
-  alone.
+- It does not instrument producer, web, or worker processes.
+- It does not require changes to task definitions or a custom Celery `Task`
+  base.
+- It never transmits or persists task args, kwargs, result values, raw
+  tracebacks, frame locals, or task message bodies.
+- Redis queue depth alone cannot establish worker topology or prove that a queue
+  has no consumers.
 
 ## Install
 
 ```bash
 python -m pip install --upgrade celery-diagnostics
-```
-
-Local development from this directory:
-
-```bash
-python -m pip install --upgrade -e ".[dev]"
 ```
 
 If the shell cannot find `celery-diagnostics`, activate the virtual environment
@@ -95,9 +92,10 @@ with the correct project. Revoking or rotating the key in the dashboard does not
 change your Celery configuration.
 
 The key is intentionally environment-only. The CLI has no `--project-key`
-option, which keeps it out of shell history and process listings. The Observer
-sends it only as an HTTP `Authorization: Bearer` credential; it is never added
-to event bodies or the local spool.
+option, so the key cannot be exposed as a process argument. Provide the real
+value through your deployment's secret manager instead of typing it into a
+shell command. The Observer sends it only as an HTTP `Authorization: Bearer`
+credential; it is never added to event bodies or the local spool.
 
 ### 2. Enable Celery events
 
@@ -113,6 +111,9 @@ Without task events, Redis queue sampling can still provide limited backlog
 evidence, but the backend cannot reconstruct complete task lifecycles.
 
 ### 3. Start the Observer
+
+The values below are placeholders. Supply the real project key through your
+secret manager.
 
 ```bash
 CD_PROJECT_KEY=cf_xxx \
@@ -139,36 +140,46 @@ Run the long-lived observer process:
 
 ```bash
 CD_PROJECT_KEY=cf_xxx \
+CD_INGEST_URL=https://ingest.celerydiagnostics.com \
 CELERY_BROKER_URL=redis://localhost:6379/0 \
 celery-diagnostics observe --queues default
 ```
 
-Enhanced observer mode loads your Celery app in the observer process only:
+Project-aware mode loads your Celery app in the Observer process only:
 
 ```bash
 CD_PROJECT_KEY=cf_xxx \
+CD_INGEST_URL=https://ingest.celerydiagnostics.com \
 celery-diagnostics observe \
   --mode project-aware \
   -A myproject.celery:app
 ```
 
-`observe` prints a startup coverage summary before the runtime loops start. In
-dry-run mode, stdout stays machine-readable JSON lines.
-
-Read-only diagnostic checks are enabled by default. Disable them explicitly
-when the observer must remain passive:
+`observe` prints a startup coverage summary to stderr before the runtime loops
+start. To inspect representative sanitized events locally without sending
+anything to the backend, use:
 
 ```bash
-celery-diagnostics observe --no-active-probes
+celery-diagnostics observe \
+  --broker memory:// \
+  --queues default \
+  --dry-run \
+  --print-sanitized-events
 ```
 
-For Redis message-presence checks, the observer scans only configured queues,
+Dry-run output is machine-readable JSON Lines and never includes the project
+key. `--dry-run` does not require `CD_PROJECT_KEY`.
+
+Read-only diagnostic checks are enabled by default. Disable them explicitly
+when the Observer must remain passive by adding `--no-active-probes` to the
+`observe` command.
+
+For Redis message-presence checks, the Observer scans only configured queues,
 uses the default Kombu priority layout, and applies a bounded scan limit. It
 parses message envelopes locally only to match the protocol-v2 task ID; message
 bodies are immediately discarded and are never transmitted or persisted. A
-missing task is reported only when all
-scanned lists were stable and decodable; partial or malformed observations
-remain inconclusive.
+missing task is reported only when all scanned lists were stable and decodable;
+partial or malformed observations remain inconclusive.
 
 Result-backend status checks are advertised only for a Redis backend with the
 JSON result serializer. A server-side Redis script returns the `status` field
@@ -193,7 +204,7 @@ This remains Celery's `PersistentScheduler`; the wrapper adds sanitized
 schedule snapshots and evidence for due and failed publish attempts. It does
 not collect task args, kwargs, result values, broker URLs, or credentials.
 Schedules above the snapshot cap are reported as an incomplete inventory, so
-the Backend will not infer that omitted entries were deleted.
+the backend will not infer that omitted entries were deleted.
 
 Without the adapter, ordinary task diagnosis continues to work and the
 `Periodic schedules` page explicitly reports that Beat evidence is unavailable.
@@ -207,7 +218,7 @@ CELERY_BROKER_URL=redis://localhost:6379/0 \
 celery-diagnostics doctor
 ```
 
-For app-aware coverage:
+For project-aware coverage:
 
 ```bash
 celery-diagnostics doctor --mode project-aware -A myproject.celery:app
@@ -227,19 +238,38 @@ celery-diagnostics status
 
 Use `doctor` when you need detailed telemetry coverage.
 
+### `replay-events`
+
+Sanitize and time-shift a retained Celery JSONL event capture for controlled
+diagnostic testing:
+
+```bash
+CD_PROJECT_KEY=cf_xxx \
+celery-diagnostics replay-events \
+  --input capture.jsonl \
+  --output sanitized-replay.jsonl \
+  --cutoff 1710000000
+```
+
+The command applies the same privacy filter used by the live Observer. Use it
+only with event captures you are authorized to process. The output file is
+owner-readable only (`0600`). `--cutoff` is the latest source-event Unix
+timestamp to include; `--anchor` can map that cutoff to a specific ISO-8601
+time and otherwise defaults to now.
+
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `CD_PROJECT_KEY` | Project key used by `observe` when sending telemetry. Required for non-dry-run `observe`. |
+| `CD_PROJECT_KEY` | Project-scoped ingest credential. Required by live `observe`, `replay-events`, and `resolve`; not required by `doctor`, `status`, or dry-run. |
 | `CELERY_BROKER_URL` | Celery broker URL. Redis is the current observer target. |
 | `CD_QUEUES` | Comma-separated queue names to sample when `--queues` is not provided. |
-| `CD_INGEST_URL` | Celery Diagnostics ingest base URL. Defaults to `http://127.0.0.1:8000`. |
+| `CD_INGEST_URL` | Celery Diagnostics ingest base URL. Defaults to loopback development at `http://127.0.0.1:8000`; hosted use should set `https://ingest.celerydiagnostics.com`. |
 | `CD_TELEMETRY_POLICY` | Identity visibility: `readable` or `local-only`. Defaults to `readable`. |
-| `CD_IDENTITY_KEY` | Customer-managed identity key. Required only for `local-only`; never sent to the Backend. |
+| `CD_IDENTITY_KEY` | Customer-managed identity key. Required only for `local-only`; never sent to the backend. |
 | `CD_OBSERVER_MODE` | `standalone` or `project-aware`. Defaults to `standalone`. |
 | `CELERY_APP` | Celery app import path used by project-aware mode, equivalent to `-A`. |
-| `CD_OBSERVER_ID` | Optional stable Observer instance identifier. |
+| `CD_OBSERVER_ID` | Observer instance identifier. Set a stable value in production; otherwise one is generated at startup. |
 | `CD_SAMPLE_INTERVAL` | Redis queue sample interval in seconds. |
 | `CD_INSPECT_INTERVAL` | Celery control inspect interval in seconds. |
 | `CD_BATCH_SIZE` | HTTP transport batch size. |
@@ -256,6 +286,8 @@ Most Observer settings have equivalent CLI options. Secrets such as
 `CD_PROJECT_KEY` and `CD_IDENTITY_KEY` remain environment-only. For example:
 
 ```bash
+CD_PROJECT_KEY=cf_xxx \
+CD_INGEST_URL=https://ingest.celerydiagnostics.com \
 celery-diagnostics observe \
   --broker redis://localhost:6379/0 \
   --queues default \
@@ -264,18 +296,21 @@ celery-diagnostics observe \
 
 ## Privacy Defaults
 
-The observer sanitizes telemetry before it leaves the customer environment.
+The Observer sanitizes telemetry before it leaves the customer environment.
 
 `readable` sends operational task, queue, routing, and worker identifiers.
 `local-only` sends stable HMAC references plus an authenticated encrypted
 identity capsule. The customer-managed identity key never leaves the Observer,
-and both modes collect the same lifecycle evidence.
+and both modes collect the same lifecycle evidence. The identity key must be at
+least 16 characters, remain stable across the project's Observer instances, and
+be stored in the customer's secret manager.
 
 To identify a `local-only` run, execute this inside the customer environment:
 
 ```bash
 CD_PROJECT_KEY=cf_xxx \
 CD_IDENTITY_KEY='customer-managed-secret' \
+CD_INGEST_URL=https://ingest.celerydiagnostics.com \
 celery-diagnostics resolve R-XXXXXXXXXXXX
 ```
 
@@ -289,7 +324,7 @@ Default behavior:
 - no frame locals;
 - project keys appear only in the Authorization header and are never written to
   event bodies or the local spool;
-- broker and ingest URL credentials are redacted in CLI reports.
+- broker and ingest URL credentials are redacted in CLI reports;
 - non-loopback ingest endpoints must use HTTPS;
 - local spool and replay files are written for the owner only (`0600`).
 
@@ -310,6 +345,34 @@ package does not add task-side progress instrumentation.
 The optional Beat adapter observes only the Beat-to-broker publication
 boundary. It does not broaden access to task payloads or application data.
 
+## Production Checklist
+
+- Store `CD_PROJECT_KEY` and, when used, `CD_IDENTITY_KEY` in a secret manager.
+- Set a stable `CD_OBSERVER_ID` for each Observer instance.
+- Configure `CD_SPOOL_PATH` on durable storage writable only by the Observer
+  service account.
+- Keep the Observer running under systemd, Docker Compose, Kubernetes, or an
+  equivalent process supervisor.
+- Allow outbound HTTPS to the ingest endpoint and only the broker/control access
+  required by the enabled checks.
+- Run `celery-diagnostics doctor` after changes to Celery routing, workers,
+  queues, the broker, or the result backend.
+
+## Troubleshooting
+
+If the dashboard receives no evidence, check that:
+
+- the project key is active and belongs to the selected dashboard project;
+- `CD_INGEST_URL` points to the Celery Diagnostics ingest endpoint;
+- the Observer can resolve and reach both the broker and the ingest endpoint;
+- the broker URL is reachable from the Observer's network namespace;
+- workers were restarted after Celery task events were enabled;
+- `--queues` or `CD_QUEUES` includes the queues you expect to sample.
+
+Start with `celery-diagnostics doctor`. It reports available evidence sources,
+diagnostic limits, and configuration steps without requiring a project key or
+contacting the backend.
+
 ## Local Development
 
 Install editable dependencies:
@@ -318,19 +381,15 @@ Install editable dependencies:
 python -m pip install --upgrade -e ".[dev]"
 ```
 
-Run tests:
+Run the test and static checks:
 
 ```bash
 python -m pytest tests -q
-```
-
-Run syntax checks:
-
-```bash
+python -m ruff check celery_diagnostics_observer tests
 python -m py_compile celery_diagnostics_observer/*.py
 ```
 
-Build a wheel:
+Build the source and wheel distributions:
 
 ```bash
 python -m build
@@ -340,22 +399,29 @@ python -m build
 
 ```text
 celery_diagnostics_observer/
-  active_probes.py    # bounded on-demand read-only checks
-  capabilities.py     # advertised active-check capabilities
-  app_context.py      # allowlisted app-aware config extraction
-  beat.py             # optional privacy-safe Celery Beat scheduler adapter
-  cli.py              # celery-diagnostics command implementation
-  config.py           # env and CLI config normalization
-  coverage.py         # doctor/status/startup coverage model
-  event_receiver.py   # Celery event stream receiver
-  redis_sampler.py    # Redis queue depth sampler
-  redis_message_probe.py # bounded task-id presence check for Redis
-  inspect_sampler.py  # optional Celery control inspect sampler
-  sanitizer.py        # privacy-safe event normalization
-  transport.py        # HTTP transport and retry behavior
-  spool.py            # sanitized local JSONL spool
+  active_probes.py       # runs bounded read-only checks requested by the backend
+  app_context.py         # reads allowlisted facts from a project Celery app
+  app_loader.py          # loads the standalone or project-aware Celery app
+  beat.py                # optional privacy-safe Celery Beat scheduler adapter
+  capabilities.py        # reports which read-only checks are currently available
+  cli.py                 # implements the celery-diagnostics commands
+  config.py              # loads and validates environment and CLI configuration
+  coverage.py            # determines what the Observer can reliably diagnose
+  event_receiver.py      # receives Celery task and worker events
+  health.py              # reports Observer health and available capabilities
+  identity.py            # protects operational identities in local-only mode
+  inspect_sampler.py     # samples worker state through Celery control inspect
+  policy.py              # defines readable and local-only telemetry policies
+  redis_message_probe.py # safely checks whether a task is present in Redis queues
+  redis_result_probe.py  # reads task status without fetching Redis result values
+  redis_sampler.py       # samples Redis queue depth
+  replay.py              # sanitizes and time-shifts retained Celery event captures
+  sanitizer.py           # removes private fields and normalizes outgoing evidence
+  spool.py               # stores sanitized evidence locally during delivery outages
+  transport.py           # batches, retries, and sends evidence to the backend
+  version.py             # package version
 tests/
-  test_*.py           # observer unit tests
+  test_*.py              # Observer test suite
 ```
 
 ## Release Notes
@@ -371,14 +437,31 @@ Before creating a GitHub release, update `pyproject.toml`, `version.py`, and
 
 ```bash
 python -m pytest tests -q
+python -m ruff check celery_diagnostics_observer tests
 python -m py_compile celery_diagnostics_observer/*.py
 python -m build
 python -m twine check dist/*
 ```
 
 Publish by creating a GitHub release tagged `vX.Y.Z`. The protected `pypi`
-environment must approve the publish job. For the first release, configure a
-pending PyPI Trusted Publisher for repository `celerydiagnostics/CeleryDiagnosticsObserver`,
-workflow `release.yml`, environment `pypi`, and project `celery-diagnostics`.
+environment must approve the publish job. The release workflow verifies that
+the tag, package metadata, and `version.py` contain the same version before it
+publishes with PyPI Trusted Publishing.
 
-See `CHANGELOG.md` for version notes.
+See the [changelog](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/blob/main/CHANGELOG.md)
+for version notes.
+
+## Security and License
+
+Report vulnerabilities through
+[GitHub private vulnerability reporting](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/security/advisories/new),
+not a public issue. Do not include production credentials, task payloads, or
+customer data in a report. See the
+[security policy](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/blob/main/SECURITY.md)
+for details.
+
+This package is source-available under the
+[Celery Diagnostics Observer Proprietary License](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/blob/main/LICENSE).
+It may be used as an unmodified integration with the Celery Diagnostics
+service, subject to the
+[Celery Diagnostics Terms of Service](https://app.celerydiagnostics.com/dashboard/help/terms/).
