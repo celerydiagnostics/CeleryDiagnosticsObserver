@@ -4,8 +4,11 @@
 [![PyPI version](https://img.shields.io/pypi/v/celery-diagnostics.svg)](https://pypi.org/project/celery-diagnostics/)
 [![Python versions](https://img.shields.io/pypi/pyversions/celery-diagnostics.svg)](https://pypi.org/project/celery-diagnostics/)
 
-The official data-collection component for the
-[Celery Diagnostics](https://celerydiagnostics.com/) backend.
+The data-collection component for the
+[Celery Diagnostics](https://celerydiagnostics.com/) service.
+
+Celery Diagnostics is an independent product and is not affiliated with,
+sponsored by, or endorsed by the Celery project or its maintainers.
 
 The Observer runs as a separate process beside your Celery deployment. It reads
 Celery events and bounded operational signals, sanitizes them locally, and sends
