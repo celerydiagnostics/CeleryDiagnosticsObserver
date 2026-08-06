@@ -1,4 +1,4 @@
-# Celery Diagnostics Observer
+# <img src="https://celerydiagnostics.com/brand/logo-mark.png" alt="Celery Diagnostics" width="44" align="absmiddle"> Celery Diagnostics Observer
 
 [![Observer CI](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/actions/workflows/ci.yml/badge.svg)](https://github.com/celerydiagnostics/CeleryDiagnosticsObserver/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/celery-diagnostics.svg)](https://pypi.org/project/celery-diagnostics/)
